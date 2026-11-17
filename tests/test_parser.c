@@ -51,6 +51,81 @@ static void check_error(const char *src, int line, int col, const char *msg) {
     arena_free(&a);
 }
 
+/* Parsing src must fail with a message containing msg, at any position. */
+static void check_error_any(const char *src, const char *msg) {
+    Arena a;
+    ParseError err;
+    File *f;
+
+    arena_init(&a);
+    f = parse_file(src, &a, &err);
+    if (f) {
+        fprintf(stderr, "expected a parse error containing \"%s\"\n", msg);
+        failures++;
+    } else if (!strstr(err.msg, msg)) {
+        fprintf(stderr, "wrong error: got \"%s\", want ...%s...\n", err.msg, msg);
+        failures++;
+    }
+    arena_free(&a);
+}
+
+/* prefix + (unit repeated n times) + suffix, malloc'ed */
+static char *build(const char *prefix, const char *unit, size_t n, const char *suffix) {
+    size_t lp = strlen(prefix), lu = strlen(unit), ls = strlen(suffix);
+    char *s = malloc(lp + lu * n + ls + 1);
+    size_t i;
+
+    if (!s) {
+        exit(1);
+    }
+    memcpy(s, prefix, lp);
+    for (i = 0; i < n; i++) {
+        memcpy(s + lp + i * lu, unit, lu);
+    }
+    memcpy(s + lp + n * lu, suffix, ls + 1);
+    return s;
+}
+
+static void test_limits(void) {
+    char *s;
+
+    /* moderately deep nesting is fine */
+    s = build("func f() = ", "(", 100, "1");
+    {
+        char *t = build(s, ")", 100, "");
+        Arena a;
+        ParseError err;
+        arena_init(&a);
+        if (!parse_file(t, &a, &err)) {
+            fprintf(stderr, "100 nested parens should parse: %s\n", err.msg);
+            failures++;
+        }
+        arena_free(&a);
+        free(t);
+    }
+    free(s);
+
+    /* absurd nesting is an error, not a crash */
+    s = build("func f() = ", "(", 100000, "1");
+    check_error_any(s, "nesting is too deep");
+    free(s);
+    s = build("func f() = ", "-", 100000, "1");
+    check_error_any(s, "nesting is too deep");
+    free(s);
+    s = build("func f() = ", "{", 100000, "");
+    check_error_any(s, "nesting is too deep");
+    free(s);
+    s = build("struct S = { f: ", "*", 100000, "i32 }");
+    check_error_any(s, "nesting is too deep");
+    free(s);
+    s = build("func f() = a", "+a", 100000, "");
+    check_error_any(s, "expression is too long");
+    free(s);
+    s = build("func f() = a", ".b", 100000, "");
+    check_error_any(s, "expression is too long");
+    free(s);
+}
+
 static void test_unfold(void) {
     check("", "");
     check("unfold std.console\n", "(unfold std.console)");
@@ -248,6 +323,7 @@ static void test_errors(void) {
 }
 
 int main(void) {
+    test_limits();
     test_unfold();
     test_struct();
     test_types();
