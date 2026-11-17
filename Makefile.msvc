@@ -33,7 +33,7 @@ test: $(BUILD)\gale.exe $(BUILD)\test_lexer.exe $(BUILD)\test_arena.exe $(BUILD)
 	$(BUILD)\test_lexer.exe
 	$(BUILD)\test_arena.exe
 	$(BUILD)\test_parser.exe
-	@for %%f in (examples\*.gale) do (echo lex %%f && $(BUILD)\gale.exe lex %%f > nul || exit 1)
+	@for %%f in (examples\*.gale) do (echo lex+parse %%f && $(BUILD)\gale.exe lex %%f > nul && $(BUILD)\gale.exe parse %%f > nul || exit 1)
 
 clean:
 	@if exist $(BUILD) rmdir /s /q $(BUILD)
