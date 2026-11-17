@@ -13,7 +13,11 @@ endif
 
 BUILD := build
 GALE := $(BUILD)/gale$(EXE)
-TEST_LEXER := $(BUILD)/test_lexer$(EXE)
+
+HDRS := $(wildcard src/*.h)
+LIB_SRCS := $(filter-out src/main.c,$(wildcard src/*.c))
+LIB_OBJS := $(LIB_SRCS:src/%.c=$(BUILD)/%.o)
+TESTS := $(patsubst tests/%.c,$(BUILD)/%$(EXE),$(wildcard tests/test_*.c))
 
 .PHONY: all test clean
 
@@ -22,17 +26,20 @@ all: $(GALE)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/%.o: src/%.c src/lexer.h | $(BUILD)
+$(BUILD)/%.o: src/%.c $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(GALE): $(BUILD)/main.o $(BUILD)/lexer.o
+$(GALE): $(BUILD)/main.o $(LIB_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(TEST_LEXER): tests/test_lexer.c $(BUILD)/lexer.o | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/test_%$(EXE): tests/test_%.c $(LIB_OBJS) $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $< $(LIB_OBJS) -o $@
 
-test: $(GALE) $(TEST_LEXER)
-	$(TEST_LEXER)
+test: $(GALE) $(TESTS)
+	@for t in $(TESTS); do \
+		echo "run $$t"; \
+		$$t || exit 1; \
+	done
 	@for f in examples/*.gale; do \
 		echo "lex $$f"; \
 		$(GALE) lex $$f > /dev/null || exit 1; \
