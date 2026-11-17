@@ -26,13 +26,37 @@ export func main() -> void = {
 
 ## 4. unfold
 
-- `unfold a.b` はコンパイル前に、`a` の `b` だけをパスを保ったまま展開する
-  - 展開結果は `struct a { struct b { ... } }` の形になる
-- 同名の struct はマージされる
-- マージ時に同名の func やフィールドが重複したらコンパイルエラー
-- 循環 unfold はエラー
-- unfold は再公開されない。再公開したいときだけ `export unfold` と書く
+`unfold a.b.c` は、コンパイル前に `a.b.c` の中身を今いる struct の中へ、**パスを保ったまま**展開する。
+展開結果は `struct a { struct b { struct c { ... } } }` の形になる。
+
+### ファイルの探し方
+
+- 検索ディレクトリ(ルート)を順に見て、`a.b.c` を次の順で探す。最初に見つかったファイルを使う
+  1. `<root>/a.gale`
+  2. `<root>/a/b.gale`
+  3. `<root>/a/b/c.gale`
+- ファイルが見つかったら、残りのパスはそのファイルの中の struct か func を指す
+  - 例: `unfold lib.math.add` は `lib/math.gale` の中の `add` だけを取り込む
+- ファイル全体を指したときは、ファイルが「パスの最後の名前の struct」になる
+- ディレクトリそのもの(`unfold lib`)はまだ展開できない
+- ルートは、`gale expand` では「そのファイルのあるディレクトリ」と `-I` で指定したディレクトリ(この順)
+
+### 展開とマージ
+
+- 展開結果は、今いる struct にマージされる。同名の struct は合流する
+  - 同名の func やフィールドが重複したらエラー。func と struct が同名でもエラー
+- 展開するファイルの中にある `unfold` は、先にそのファイルの中で展開される
+  (展開結果はそのファイルの struct の中に入る)
+- 同じものを同じ struct に2回 unfold しても、2回目は無視される
+- 循環 unfold(a → b → a)や、自分自身の unfold はエラー(展開の連鎖を表示する)。展開の深さは 64 まで
+- `unfold` は struct の中にも書ける(その struct の中に展開される)
 - 複数の枝をまとめて書く `unfold std.{console, math}` は検討中
+
+### export
+
+- 展開で作られる struct(`a`、`b`、ファイル全体の `c`)は、`unfold` に `export` が付いているときだけ公開になる
+  - unfold しただけでは再公開されない。再公開したいときは `export unfold`
+- 元のファイルの中の `export` の有無は、そのまま引き継ぐ
 
 ## 5. 可視性
 
