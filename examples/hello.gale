@@ -1,0 +1,5 @@
+unfold std.console
+
+export func main() -> void = {
+    std.console.println("Hello, World!")
+}

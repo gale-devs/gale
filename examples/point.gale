@@ -1,0 +1,22 @@
+unfold std.console
+unfold std.mem
+
+// 2D の点
+struct Point = { x: f64, y: f64 }
+
+func len2(p: *Point) -> f64 = p.x * p.x + p.y * p.y
+
+func abs(x: i32) -> i32 = if x < 0 { -x } else { x }
+
+export func main() -> void = {
+    let a = std.mem.heap
+    let p = a.new(Point { x: 3.0, y: 4.0 })
+    defer a.free(p)
+
+    var n = 0x10 + 0b101 + 1_000
+    n = n + abs(-1)
+
+    /* 値は式で返る */
+    let d = len2(p) as f64
+    std.console.println("done")
+}
