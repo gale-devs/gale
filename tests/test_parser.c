@@ -186,6 +186,26 @@ static void test_control_flow(void) {
                "(block (expr (while a (block (tail b)))) (tail (while c (block (tail d)))))");
 }
 
+static void test_struct_literals(void) {
+    check_expr("Point { x: 1, y: 2 }", "(lit Point (x 1) (y 2))");
+    check_expr("std.geo.Point { x: 1 }", "(lit std.geo.Point (x 1))");
+    check_expr("Point {}", "(lit Point)");
+    check("func f() = P {\n  x: 1\n  y: 2,\n}", "(func f () void (lit P (x 1) (y 2)))");
+    check_expr("Line { a: P { x: 1 }, b: g(P {}) }", "(lit Line (a (lit P (x 1))) (b (call g (lit P))))");
+    check_expr("P { x: 1 }.x", "(. (lit P (x 1)) x)");
+    check_expr("{ let p = P { x: 1 }\n p }", "(block (let p (lit P (x 1))) (tail p))");
+    check_expr("{ return P { x: 1 } }", "(block (return (lit P (x 1))))");
+    /* in an if/while condition `Name {` starts the body; parentheses bring literals back */
+    check_expr("if a { b }", "(if a (block (tail b)))");
+    check_expr("if (P { x: 1 }) == q { 1 }", "(if (== (lit P (x 1)) q) (block (tail 1)))");
+    check_expr("if f(P { x: 1 }) { 1 }", "(if (call f (lit P (x 1))) (block (tail 1)))");
+    check_expr("while a { P { x: 1 } }", "(while a (block (tail (lit P (x 1)))))");
+    /* a call result is not a path, so `{` after it is not a literal (and a second
+     * statement on the same line needs ';') */
+    check_error("func f() = { f() { 1 } }", 1, 18, "expected ';' or a newline");
+    check_expr("{ f(); { 1 } }", "(block (expr (call f)) (tail (block (tail 1))))");
+}
+
 static void test_hello_world(void) {
     check("unfold std.console\n\nexport func main() -> void = {\n"
           "    std.console.println(\"Hello, World!\")\n}\n",
@@ -217,6 +237,10 @@ static void test_errors(void) {
     check_error("func f() = if a {} else 1", 1, 25, "expected '{', found '1'");
     check_error("func f() = else", 1, 12, "expected an expression, found 'else'");
     check_error("func f() = while a", 1, 19, "expected '{', found end of file");
+    check_error("func f() = P { x 1 }", 1, 14, "expected ',' or a newline");
+    check_error("func f() = P { x: }", 1, 19, "expected an expression, found '}'");
+    check_error("func f() = P { x: 1 y: 2 }", 1, 21, "expected ',' or a newline");
+    check_error("func f() = P { x: 1", 1, 20, "expected '}'");
     check_error("func f() = a.", 1, 14, "expected a field name");
     check_error("func f() = a(1 2)", 1, 16, "expected ')'");
     check_error("func f() = a[1", 1, 15, "expected ']'");
@@ -235,6 +259,7 @@ int main(void) {
     test_blocks();
     test_statements();
     test_control_flow();
+    test_struct_literals();
     test_hello_world();
     test_errors();
 
