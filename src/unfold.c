@@ -278,7 +278,7 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     char tried[400];
     char *file_path = NULL;
     char *text = NULL;
-    size_t r;
+    size_t r, k = 0;
     Site site;
     ParseError perr;
     File *file;
@@ -290,15 +290,21 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     site.col = uf->col;
     site.what = what;
 
+    /* The first k segments name a file; the rest name something inside it. The
+     * shortest prefix that is a file wins. */
     tried[0] = '\0';
     for (r = 0; r < u->nroots && !text; r++) {
-        char *cand = candidate(u, u->roots[r], path, path->count);
-        text = read_file(cand);
-        if (text) {
-            file_path = cand;
-        } else {
-            size_t used = strlen(tried);
-            snprintf(tried + used, sizeof tried - used, "%s%s", used ? ", " : "", cand);
+        size_t kk;
+        for (kk = 1; kk <= path->count && !text; kk++) {
+            char *cand = candidate(u, u->roots[r], path, kk);
+            text = read_file(cand);
+            if (text) {
+                file_path = cand;
+                k = kk;
+            } else {
+                size_t used = strlen(tried);
+                snprintf(tried + used, sizeof tried - used, "%s%s", used ? ", " : "", cand);
+            }
         }
     }
     if (!text) {
@@ -313,9 +319,28 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     }
     expand_body(u, &file->body, file_path);
 
-    /* the file is a struct named after the last segment ... */
-    leaf = new_struct_item(u, path->segs[path->count - 1], uf->exported, uf->line, uf->col);
-    leaf->u.struct_.body = file->body;
+    if (k == path->count) {
+        /* the whole file: a struct named after the last segment ... */
+        leaf = new_struct_item(u, path->segs[path->count - 1], uf->exported, uf->line, uf->col);
+        leaf->u.struct_.body = file->body;
+    } else {
+        /* part of the file: walk down through structs to the named struct or func */
+        Body *cur = &file->body;
+        for (i = k; i + 1 < path->count; i++) {
+            Item *m = find_member(cur, path->segs[i]);
+            if (!m || m->kind != ITEM_STRUCT) {
+                fail(u, cur_file, uf->line, uf->col, "cannot find '%.*s' in '%s' (file %s)",
+                     (int)path->segs[i].len, path->segs[i].ptr, path_text(u, path, i), file_path);
+            }
+            cur = &m->u.struct_.body;
+        }
+        leaf = find_member(cur, path->segs[path->count - 1]);
+        if (!leaf) {
+            fail(u, cur_file, uf->line, uf->col, "cannot find '%.*s' in '%s' (file %s)",
+                 (int)path->segs[path->count - 1].len, path->segs[path->count - 1].ptr,
+                 path_text(u, path, path->count - 1), file_path);
+        }
+    }
     /* ... wrapped in one struct per remaining segment */
     for (i = path->count - 1; i > 0; i--) {
         Item *w = new_struct_item(u, path->segs[i - 1], uf->exported, uf->line, uf->col);
