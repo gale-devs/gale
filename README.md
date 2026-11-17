@@ -20,13 +20,23 @@ export func main() -> void = {
 
 ## ビルド
 
-必要なもの: C99 対応のコンパイラ(gcc / clang)と GNU make。
-Windows では MSYS2 の MinGW-w64 gcc を使う。
+必要なもの: C99 対応のコンパイラ(gcc / clang / MSVC)。
+
+- Linux / MSYS2(MinGW-w64): GNU make
+- Windows(MSVC): Developer Command Prompt で nmake
 
 ```
 make          # build/gale (Windows は build/gale.exe) を作る
 make test     # 字句解析器のテストとサンプルの字句解析を実行
 make clean
+```
+
+MSVC の場合:
+
+```
+nmake /nologo /f Makefile.msvc
+nmake /nologo /f Makefile.msvc test
+nmake /nologo /f Makefile.msvc clean
 ```
 
 ## 使い方
@@ -53,6 +63,6 @@ gale --version
 GitHub Actions で push / PR ごとに、次の環境でビルドとテストを実行する。
 
 - Linux (ubuntu-latest): gcc と clang
-- Windows (windows-latest): MSYS2 / MinGW-w64 gcc
+- Windows (windows-latest): MSYS2 / MinGW-w64 gcc と、MSVC (nmake)
 
 ELF / PE の出力ができた段階で、生成した実行ファイルを各 OS 上で実際に動かすテストを追加する。
