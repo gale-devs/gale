@@ -181,6 +181,77 @@ static Expr *parse_primary(Parser *p) {
     }
 }
 
+/* ---- struct literals: Name { field: value, ... } ---- */
+
+/* Number of segments if e is a plain path (a.b.c), otherwise 0. */
+static size_t expr_path_len(const Expr *e) {
+    if (e->kind == EXPR_IDENT) {
+        return 1;
+    }
+    if (e->kind == EXPR_FIELD) {
+        size_t n = expr_path_len(e->u.field.base);
+        return n ? n + 1 : 0;
+    }
+    return 0;
+}
+
+static void fill_path(const Expr *e, Str *segs, size_t n) {
+    while (n > 0) {
+        if (e->kind == EXPR_IDENT) {
+            segs[--n] = e->u.lit;
+        } else {
+            segs[--n] = e->u.field.name;
+            e = e->u.field.base;
+        }
+    }
+}
+
+/* At '{': a struct literal starts with `{ }` or `{ name :`. This lookahead is what
+ * tells it apart from a block such as `{ x }`. */
+static int struct_lit_ahead(Parser *p) {
+    const Token *a = peek_at(p, 1);
+    return a->kind == TOK_RBRACE || (a->kind == TOK_IDENT && peek_at(p, 2)->kind == TOK_COLON);
+}
+
+static Expr *parse_struct_lit(Parser *p, const Expr *path_expr, size_t path_len) {
+    Expr *e = new_expr(p, EXPR_STRUCT_LIT, cur(p));
+    Vec fields;
+    Str *segs = arena_alloc(p->arena, path_len * sizeof(Str));
+    int saved = p->no_struct;
+
+    fill_path(path_expr, segs, path_len);
+    e->u.struct_lit.path.segs = segs;
+    e->u.struct_lit.path.count = path_len;
+
+    next(p); /* '{' */
+    p->no_struct = 0;
+    vec_init(&fields, sizeof(FieldInit *));
+    while (!at(p, TOK_RBRACE)) {
+        Token *t = cur(p);
+        FieldInit *fi = arena_alloc(p->arena, sizeof(FieldInit));
+
+        fi->name = expect_ident(p, "a field name");
+        fi->line = t->line;
+        fi->col = t->col;
+        expect(p, TOK_COLON, "':'");
+        fi->value = parse_expr(p);
+        vec_push(p->arena, &fields, &fi);
+
+        if (eat(p, TOK_COMMA) || at(p, TOK_RBRACE) || cur(p)->nl_before) {
+            continue;
+        }
+        if (at(p, TOK_EOF)) {
+            fail_expected(p, "'}'");
+        }
+        fail_expected(p, "',' or a newline");
+    }
+    p->no_struct = saved;
+    expect(p, TOK_RBRACE, "'}'");
+    e->u.struct_lit.fields = fields.data;
+    e->u.struct_lit.nfields = fields.len;
+    return e;
+}
+
 /* Postfix operators must start on the same line as the expression they apply to,
  * so a line beginning with '(' or '[' starts a new statement. */
 static Expr *parse_postfix(Parser *p) {
@@ -228,6 +299,9 @@ static Expr *parse_postfix(Parser *p) {
             n = new_expr(p, EXPR_FIELD, t);
             n->u.field.base = e;
             n->u.field.name = expect_ident(p, "a field name");
+        } else if (t->kind == TOK_LBRACE && !p->no_struct && expr_path_len(e) > 0 &&
+                   struct_lit_ahead(p)) {
+            n = parse_struct_lit(p, e, expr_path_len(e));
         } else {
             break;
         }
