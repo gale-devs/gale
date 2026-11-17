@@ -84,6 +84,18 @@ static void test_func(void) {
           "(struct S (n i32) (func m ((x i32)) i32 x))");
 }
 
+static void test_postfix(void) {
+    check("func f() = a.b.c(1, x)[2]", "(func f () void (index (call (. (. a b) c) 1 x) 2))");
+    check("func f() = g()", "(func f () void (call g))");
+    check("func f() = g(1,)", "(func f () void (call g 1))");
+    check("func f() = g(\n  1,\n  2,\n)", "(func f () void (call g 1 2))");
+    check("func f() = a[b[0]](c)", "(func f () void (call (index a (index b 0)) c))");
+    check("func f() = (a.b)(1)", "(func f () void (call (. a b) 1))");
+    check("func f() = x.\n  y", "(func f () void (. x y))");
+    /* a line starting with '(' is not a call of the previous line */
+    check_error("func f() = a\n(b)", 2, 1, "expected an item");
+}
+
 static void test_errors(void) {
     check_error("struct = {}", 1, 8, "expected a struct name");
     check_error("x: i32", 1, 1, "fields are not allowed at file level");
@@ -98,6 +110,9 @@ static void test_errors(void) {
     check_error("func f() 1", 1, 10, "expected '='");
     check_error("func f() =", 1, 11, "expected an expression, found end of file");
     check_error("func f() = )", 1, 12, "expected an expression, found ')'");
+    check_error("func f() = a.", 1, 14, "expected a field name");
+    check_error("func f() = a(1 2)", 1, 16, "expected ')'");
+    check_error("func f() = a[1", 1, 15, "expected ']'");
     check_error("func f() -> i32!= 1", 1, 16, "write 'T! =' with a space");
 }
 
@@ -106,6 +121,7 @@ int main(void) {
     test_struct();
     test_types();
     test_func();
+    test_postfix();
     test_errors();
 
     if (failures) {
