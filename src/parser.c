@@ -124,7 +124,9 @@ static Expr *new_expr(Parser *p, ExprKind kind, const Token *t) {
 }
 
 static Expr *parse_expr(Parser *p);
+static Expr *parse_block(Parser *p);
 static Type *parse_type_prefix(Parser *p);
+static Type *parse_type(Parser *p);
 
 static Expr *parse_primary(Parser *p) {
     Token *t = cur(p);
@@ -166,6 +168,8 @@ static Expr *parse_primary(Parser *p) {
         expect(p, TOK_RPAREN, "')'");
         return e;
     }
+    case TOK_LBRACE:
+        return parse_block(p);
     default:
         fail_expected(p, "an expression");
     }
@@ -343,6 +347,103 @@ static Expr *parse_expr(Parser *p) {
         return e;
     }
     return lhs;
+}
+
+/* ---- blocks and statements ---- */
+
+static Stmt *new_stmt(Parser *p, StmtKind kind, const Token *t) {
+    Stmt *st = arena_alloc(p->arena, sizeof(Stmt));
+    st->kind = kind;
+    st->line = t->line;
+    st->col = t->col;
+    return st;
+}
+
+/* A statement ends at ';', at a newline, or right before the closing '}'. */
+static void end_stmt(Parser *p) {
+    if (eat(p, TOK_SEMI) || at(p, TOK_RBRACE) || cur(p)->nl_before) {
+        return;
+    }
+    if (at(p, TOK_EOF)) {
+        fail_expected(p, "'}'");
+    }
+    fail_expected(p, "';' or a newline");
+}
+
+/* { stmt* [expr] }  -- a final expression without ';' is the value of the block. */
+static Expr *parse_block(Parser *p) {
+    Token *open = expect(p, TOK_LBRACE, "'{'");
+    Expr *e = new_expr(p, EXPR_BLOCK, open);
+    Block *b = arena_alloc(p->arena, sizeof(Block));
+    Vec stmts;
+    int saved = p->no_struct;
+    int done = 0;
+
+    vec_init(&stmts, sizeof(Stmt *));
+    p->no_struct = 0;
+
+    while (!done && !at(p, TOK_RBRACE)) {
+        Token *t = cur(p);
+        Stmt *st = NULL;
+
+        if (t->kind == TOK_EOF) {
+            fail_expected(p, "'}'");
+        }
+        if (eat(p, TOK_SEMI)) {
+            continue;
+        }
+
+        switch (t->kind) {
+        case TOK_KW_LET:
+        case TOK_KW_VAR:
+            next(p);
+            st = new_stmt(p, t->kind == TOK_KW_LET ? STMT_LET : STMT_VAR, t);
+            st->name = expect_ident(p, "a variable name");
+            if (eat(p, TOK_COLON)) {
+                st->type = parse_type(p);
+            }
+            expect(p, TOK_ASSIGN, "'='");
+            st->expr = parse_expr(p);
+            end_stmt(p);
+            break;
+        case TOK_KW_DEFER:
+            next(p);
+            st = new_stmt(p, STMT_DEFER, t);
+            st->expr = parse_expr(p);
+            end_stmt(p);
+            break;
+        case TOK_KW_RETURN:
+            next(p);
+            st = new_stmt(p, STMT_RETURN, t);
+            if (!(at(p, TOK_SEMI) || at(p, TOK_RBRACE) || at(p, TOK_EOF) || cur(p)->nl_before)) {
+                st->expr = parse_expr(p);
+            }
+            end_stmt(p);
+            break;
+        default: {
+            Expr *x = parse_expr(p);
+            if (at(p, TOK_RBRACE)) {
+                b->tail = x;
+                done = 1;
+            } else {
+                st = new_stmt(p, STMT_EXPR, t);
+                st->expr = x;
+                end_stmt(p);
+            }
+            break;
+        }
+        }
+        if (st) {
+            vec_push(p->arena, &stmts, &st);
+        }
+    }
+
+    p->no_struct = saved;
+    expect(p, TOK_RBRACE, "'}'");
+    b->stmts = stmts.data;
+    b->nstmts = stmts.len;
+    e->u.block = b;
+    return e;
 }
 
 /* ---- types ---- */
