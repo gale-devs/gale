@@ -146,6 +146,36 @@ static void test_operator_lines(void) {
     check_error("func f() = 1 +", 1, 15, "expected an expression, found end of file");
 }
 
+static void test_blocks(void) {
+    check_expr("{}", "(block)");
+    check_expr("{ 1 }", "(block (tail 1))");
+    check_expr("{ a; b }", "(block (expr a) (tail b))");
+    check_expr("{ ; ; a }", "(block (tail a))");
+    check_expr("{ { 1 } }", "(block (tail (block (tail 1))))");
+    check("func f() = {\n  a\n  b\n}", "(func f () void (block (expr a) (tail b)))");
+    check("func f() = {\n  a\n  b;\n}", "(func f () void (block (expr a) (expr b)))");
+}
+
+static void test_statements(void) {
+    check("func f() = {\n  let x = 1\n  var y: i32 = 2\n  x + y\n}",
+          "(func f () void (block (let x 1) (var y i32 2) (tail (+ x y))))");
+    check_expr("{ let p: *u8 = f() }", "(block (let p (ptr u8) (call f)))");
+    check_expr("{ defer a.free(p)\n 0 }", "(block (defer (call (. a free) p)) (tail 0))");
+    check_expr("{ return }", "(block (return))");
+    check_expr("{ return 1 }", "(block (return 1))");
+    check_expr("{ return; 1 }", "(block (return) (tail 1))");
+    check("func f() = {\n  return\n  1\n}", "(func f () void (block (return) (tail 1)))");
+    check_expr("{ x = 1; x }", "(block (expr (= x 1)) (tail x))");
+}
+
+static void test_hello_world(void) {
+    check("unfold std.console\n\nexport func main() -> void = {\n"
+          "    std.console.println(\"Hello, World!\")\n}\n",
+          "(unfold std.console)\n"
+          "(export func main () void (block (tail (call (. (. std console) println) "
+          "\"Hello, World!\"))))");
+}
+
 static void test_errors(void) {
     check_error("struct = {}", 1, 8, "expected a struct name");
     check_error("x: i32", 1, 1, "fields are not allowed at file level");
@@ -160,6 +190,11 @@ static void test_errors(void) {
     check_error("func f() 1", 1, 10, "expected '='");
     check_error("func f() =", 1, 11, "expected an expression, found end of file");
     check_error("func f() = )", 1, 12, "expected an expression, found ')'");
+    check_error("func f() = { a b }", 1, 16, "expected ';' or a newline");
+    check_error("func f() = { a", 1, 15, "expected '}'");
+    check_error("func f() = { let = 1 }", 1, 18, "expected a variable name");
+    check_error("func f() = { let x 1 }", 1, 20, "expected '='");
+    check_error("func f() = { return 1 2 }", 1, 23, "expected ';' or a newline");
     check_error("func f() = a.", 1, 14, "expected a field name");
     check_error("func f() = a(1 2)", 1, 16, "expected ')'");
     check_error("func f() = a[1", 1, 15, "expected ']'");
@@ -175,6 +210,9 @@ int main(void) {
     test_operators();
     test_unary_cast_assign();
     test_operator_lines();
+    test_blocks();
+    test_statements();
+    test_hello_world();
     test_errors();
 
     if (failures) {
