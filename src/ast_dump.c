@@ -157,6 +157,54 @@ static void dump_expr(Buf *b, const Expr *e) {
         dump_type(b, e->u.cast.type);
         put(b, ")");
         break;
+    case EXPR_BLOCK: {
+        const Block *blk = e->u.block;
+        size_t i;
+        put(b, "(block");
+        for (i = 0; i < blk->nstmts; i++) {
+            const Stmt *st = blk->stmts[i];
+            put(b, " ");
+            switch (st->kind) {
+            case STMT_LET:
+            case STMT_VAR:
+                put(b, st->kind == STMT_LET ? "(let " : "(var ");
+                put_str(b, st->name);
+                put(b, " ");
+                if (st->type) {
+                    dump_type(b, st->type);
+                    put(b, " ");
+                }
+                dump_expr(b, st->expr);
+                put(b, ")");
+                break;
+            case STMT_DEFER:
+                put(b, "(defer ");
+                dump_expr(b, st->expr);
+                put(b, ")");
+                break;
+            case STMT_RETURN:
+                put(b, "(return");
+                if (st->expr) {
+                    put(b, " ");
+                    dump_expr(b, st->expr);
+                }
+                put(b, ")");
+                break;
+            case STMT_EXPR:
+                put(b, "(expr ");
+                dump_expr(b, st->expr);
+                put(b, ")");
+                break;
+            }
+        }
+        if (blk->tail) {
+            put(b, " (tail ");
+            dump_expr(b, blk->tail);
+            put(b, ")");
+        }
+        put(b, ")");
+        break;
+    }
     case EXPR_CALL: {
         size_t i;
         put(b, "(call ");
