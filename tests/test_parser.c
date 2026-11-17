@@ -96,6 +96,56 @@ static void test_postfix(void) {
     check_error("func f() = a\n(b)", 2, 1, "expected an item");
 }
 
+/* Wraps an expression in a function so it can be checked on its own. */
+static void check_expr(const char *expr, const char *want) {
+    char src[256];
+    char full[300];
+
+    snprintf(src, sizeof src, "func f() = %s", expr);
+    snprintf(full, sizeof full, "(func f () void %s)", want);
+    check(src, full);
+}
+
+static void test_operators(void) {
+    check_expr("1 + 2 * 3", "(+ 1 (* 2 3))");
+    check_expr("1 - 2 - 3", "(- (- 1 2) 3)");
+    check_expr("(1 + 2) * 3", "(* (+ 1 2) 3)");
+    check_expr("a || b && c == d", "(|| a (&& b (== c d)))");
+    check_expr("a | b ^ c & d << 1 + 2", "(| a (^ b (& c (<< d (+ 1 2)))))");
+    check_expr("a << 2 >= b", "(>= (<< a 2) b)");
+    check_expr("a % b / c", "(/ (% a b) c)");
+    check_expr("a != b", "(!= a b)");
+    check_expr("a < b", "(< a b)");
+}
+
+static void test_unary_cast_assign(void) {
+    check_expr("-a * b", "(* (- a) b)");
+    check_expr("- -x", "(- (- x))");
+    check_expr("!a && b", "(&& (! a) b)");
+    check_expr("~a", "(~ a)");
+    check_expr("*p.x", "(deref (. p x))");
+    check_expr("&x", "(addr x)");
+    check_expr("try f(x)", "(try (call f x))");
+    check_expr("f(a & b, &c)", "(call f (& a b) (addr c))");
+    check_expr("a as i32 * 2", "(* (as a i32) 2)");
+    check_expr("-a as u8", "(as (- a) u8)");
+    check_expr("p as *u8", "(as p (ptr u8))");
+    check_expr("a as i32 as i64", "(as (as a i32) i64)");
+    check_expr("a = b = c", "(= a (= b c))");
+    check_expr("x.y = 1 + 2", "(= (. x y) (+ 1 2))");
+    check_expr("a[i] = *p", "(= (index a i) (deref p))");
+}
+
+static void test_operator_lines(void) {
+    /* a line may end with an operator ... */
+    check("func f() = a +\n  b", "(func f () void (+ a b))");
+    check("func f() = a =\n  b", "(func f () void (= a b))");
+    /* ... but a line starting with one begins a new item */
+    check_error("func f() = a\n+ b", 2, 1, "expected an item");
+    check_error("func f() = a\n= b", 2, 1, "expected an item");
+    check_error("func f() = 1 +", 1, 15, "expected an expression, found end of file");
+}
+
 static void test_errors(void) {
     check_error("struct = {}", 1, 8, "expected a struct name");
     check_error("x: i32", 1, 1, "fields are not allowed at file level");
@@ -122,6 +172,9 @@ int main(void) {
     test_types();
     test_func();
     test_postfix();
+    test_operators();
+    test_unary_cast_assign();
+    test_operator_lines();
     test_errors();
 
     if (failures) {
