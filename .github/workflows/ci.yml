@@ -59,7 +59,30 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: gale-windows-x86_64
+          name: gale-windows-mingw-x86_64
+          path: build/gale.exe
+
+  windows-msvc:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        run: nmake /nologo /f Makefile.msvc
+
+      - name: Test
+        run: nmake /nologo /f Makefile.msvc test
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gale-windows-msvc-x86_64
           path: build/gale.exe
 
   # ELF / PE の出力ができたら、ここに「生成した実行ファイルを各 OS 上で
