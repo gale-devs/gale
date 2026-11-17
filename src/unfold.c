@@ -10,12 +10,16 @@
 #include "fsutil.h"
 #include "parser.h"
 
+#define MAX_UNFOLD_DEPTH 64
+
 struct Unfolder {
     Arena *arena;
     const char *const *roots;
     size_t nroots;
     char **owned; /* malloc'ed buffers freed by unfold_free */
     size_t nowned, capowned;
+    const char *stack[MAX_UNFOLD_DEPTH]; /* canonical paths of the files being expanded */
+    size_t nstack;
     UnfoldError *err;
     jmp_buf jb;
 };
@@ -270,9 +274,58 @@ static char *candidate(Unfolder *u, const char *root, const Path *p, size_t k) {
     return s;
 }
 
+/* Canonical path of a file we have just read (owned), or the given path if the
+ * system cannot canonicalize it. */
+static const char *canonical_of(Unfolder *u, const char *path) {
+    char *c = path_canonical(path);
+    if (!c) {
+        return path;
+    }
+    return own(u, c);
+}
+
+static void push_file(Unfolder *u, const char *canon, const Site *site) {
+    size_t i;
+
+    for (i = 0; i < u->nstack; i++) {
+        if (strcmp(u->stack[i], canon) == 0) {
+            char chain[400];
+            size_t used = 0, j;
+            chain[0] = '\0';
+            for (j = i; j < u->nstack; j++) {
+                used += (size_t)snprintf(chain + used, sizeof chain - used, "%s -> ", u->stack[j]);
+                if (used >= sizeof chain) {
+                    break;
+                }
+            }
+            fail(u, site->file, site->line, site->col, "circular unfold: %s%s", chain, canon);
+        }
+    }
+    if (u->nstack >= MAX_UNFOLD_DEPTH) {
+        fail(u, site->file, site->line, site->col, "unfolds are nested too deeply (limit %d)",
+             MAX_UNFOLD_DEPTH);
+    }
+    u->stack[u->nstack++] = canon;
+}
+
+/* Marks the structs along path[0..upto) in dst as exported. */
+static void mark_exported(Body *dst, const Path *path, size_t upto) {
+    Body *cur = dst;
+    size_t i;
+
+    for (i = 0; i < upto && cur; i++) {
+        Item *m = find_member(cur, path->segs[i]);
+        if (!m) {
+            return;
+        }
+        m->exported = 1;
+        cur = m->kind == ITEM_STRUCT ? &m->u.struct_.body : NULL;
+    }
+}
+
 static void expand_body(Unfolder *u, Body *body, const char *cur_file);
 
-static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *cur_file) {
+static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *cur_file, Vec *seen) {
     const Path *path = &uf->u.unfold;
     char *what = path_text(u, path, path->count);
     char tried[400];
@@ -284,6 +337,8 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     File *file;
     Item *leaf;
     size_t i;
+    const char *canon;
+    char *key;
 
     site.file = cur_file;
     site.line = uf->line;
@@ -313,11 +368,28 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     }
     own(u, text);
 
+    /* Unfolding the same thing twice into the same struct is a no-op (an
+     * `export unfold` still makes it exported). */
+    canon = canonical_of(u, file_path);
+    key = own(u, malloc(strlen(canon) + strlen(what) + 2));
+    sprintf(key, "%s|%s", canon, what);
+    for (i = 0; i < seen->len; i++) {
+        if (strcmp(((const char **)seen->data)[i], key) == 0) {
+            if (uf->exported) {
+                mark_exported(dst, path, k == path->count ? path->count : path->count - 1);
+            }
+            return;
+        }
+    }
+    vec_push(u->arena, seen, &key);
+
+    push_file(u, canon, &site);
     file = parse_file(text, u->arena, &perr);
     if (!file) {
         fail(u, file_path, perr.line, perr.col, "%s", perr.msg);
     }
     expand_body(u, &file->body, file_path);
+    u->nstack--;
 
     if (k == path->count) {
         /* the whole file: a struct named after the last segment ... */
@@ -356,6 +428,9 @@ static void expand_body(Unfolder *u, Body *body, const char *cur_file) {
     size_t n0 = body->nitems;
     size_t i, w;
     Item **out;
+    Vec seen;
+
+    vec_init(&seen, sizeof(const char *));
 
     for (i = 0; i < n0; i++) {
         if (orig[i]->kind == ITEM_STRUCT) {
@@ -364,7 +439,7 @@ static void expand_body(Unfolder *u, Body *body, const char *cur_file) {
     }
     for (i = 0; i < n0; i++) {
         if (orig[i]->kind == ITEM_UNFOLD) {
-            process_unfold(u, body, orig[i], cur_file);
+            process_unfold(u, body, orig[i], cur_file, &seen);
         }
     }
 
@@ -385,9 +460,11 @@ int unfold_expand(Unfolder *u, File *file, const char *entry_path, UnfoldError *
     err->msg[0] = '\0';
     err->line = 0;
     err->col = 0;
+    u->nstack = 0;
     if (setjmp(u->jb)) {
         return 0;
     }
+    u->stack[u->nstack++] = canonical_of(u, entry_path);
     expand_body(u, &file->body, entry_path);
     return 1;
 }
