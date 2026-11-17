@@ -2,7 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arena.h"
+#include "ast.h"
 #include "lexer.h"
+#include "parser.h"
 
 #define GALE_VERSION "0.0.1"
 
@@ -64,10 +67,38 @@ static int cmd_lex(const char *path) {
     return errors ? 1 : 0;
 }
 
+static int cmd_parse(const char *path) {
+    char *src = read_file(path);
+    Arena arena;
+    ParseError err;
+    File *file;
+    char *dump;
+
+    if (!src) {
+        fprintf(stderr, "gale: cannot read '%s'\n", path);
+        return 1;
+    }
+    arena_init(&arena);
+    file = parse_file(src, &arena, &err);
+    if (!file) {
+        fprintf(stderr, "%s:%d:%d: error: %s\n", path, err.line, err.col, err.msg);
+        arena_free(&arena);
+        free(src);
+        return 1;
+    }
+    dump = ast_dump(file);
+    puts(dump);
+    free(dump);
+    arena_free(&arena);
+    free(src);
+    return 0;
+}
+
 static void usage(FILE *out) {
     fprintf(out,
             "usage:\n"
             "  gale lex <file>    print the token stream\n"
+            "  gale parse <file>  print the syntax tree\n"
             "  gale --version\n"
             "  gale --help\n");
 }
@@ -83,6 +114,9 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "lex") == 0) {
         return cmd_lex(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "parse") == 0) {
+        return cmd_parse(argv[2]);
     }
     usage(stderr);
     return 2;
