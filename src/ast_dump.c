@@ -205,6 +205,24 @@ static void dump_expr(Buf *b, const Expr *e) {
         put(b, ")");
         break;
     }
+    case EXPR_IF:
+        put(b, "(if ");
+        dump_expr(b, e->u.if_.cond);
+        put(b, " ");
+        dump_expr(b, e->u.if_.then_block);
+        if (e->u.if_.else_expr) {
+            put(b, " ");
+            dump_expr(b, e->u.if_.else_expr);
+        }
+        put(b, ")");
+        break;
+    case EXPR_WHILE:
+        put(b, "(while ");
+        dump_expr(b, e->u.while_.cond);
+        put(b, " ");
+        dump_expr(b, e->u.while_.body);
+        put(b, ")");
+        break;
     case EXPR_CALL: {
         size_t i;
         put(b, "(call ");
