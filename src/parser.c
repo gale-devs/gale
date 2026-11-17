@@ -125,6 +125,8 @@ static Expr *new_expr(Parser *p, ExprKind kind, const Token *t) {
 
 static Expr *parse_expr(Parser *p);
 static Expr *parse_block(Parser *p);
+static Expr *parse_if(Parser *p);
+static Expr *parse_while(Parser *p);
 static Type *parse_type_prefix(Parser *p);
 static Type *parse_type(Parser *p);
 
@@ -170,6 +172,10 @@ static Expr *parse_primary(Parser *p) {
     }
     case TOK_LBRACE:
         return parse_block(p);
+    case TOK_KW_IF:
+        return parse_if(p);
+    case TOK_KW_WHILE:
+        return parse_while(p);
     default:
         fail_expected(p, "an expression");
     }
@@ -443,6 +449,45 @@ static Expr *parse_block(Parser *p) {
     b->stmts = stmts.data;
     b->nstmts = stmts.len;
     e->u.block = b;
+    return e;
+}
+
+/* The condition of if/while is parsed with struct literals disabled, so that
+ * `if x { ... }` is not read as the literal `x { ... }`. Wrap it in parentheses
+ * to use a struct literal there. */
+static Expr *parse_condition(Parser *p) {
+    int saved = p->no_struct;
+    Expr *cond;
+
+    p->no_struct = 1;
+    cond = parse_expr(p);
+    p->no_struct = saved;
+    return cond;
+}
+
+/* if cond { ... } [else if ... | else { ... }]   (`else` may start a new line) */
+static Expr *parse_if(Parser *p) {
+    Token *t = expect(p, TOK_KW_IF, "'if'");
+    Expr *e = new_expr(p, EXPR_IF, t);
+
+    e->u.if_.cond = parse_condition(p);
+    e->u.if_.then_block = parse_block(p);
+    if (eat(p, TOK_KW_ELSE)) {
+        if (at(p, TOK_KW_IF)) {
+            e->u.if_.else_expr = parse_if(p);
+        } else {
+            e->u.if_.else_expr = parse_block(p);
+        }
+    }
+    return e;
+}
+
+static Expr *parse_while(Parser *p) {
+    Token *t = expect(p, TOK_KW_WHILE, "'while'");
+    Expr *e = new_expr(p, EXPR_WHILE, t);
+
+    e->u.while_.cond = parse_condition(p);
+    e->u.while_.body = parse_block(p);
     return e;
 }
 
