@@ -27,7 +27,7 @@ export func main() -> void = {
 
 ```
 make          # build/gale (Windows は build/gale.exe) を作る
-make test     # 字句解析器のテストとサンプルの字句解析を実行
+make test     # 字句解析・構文解析のテストと、サンプルの字句解析・構文解析を実行
 make clean
 ```
 
@@ -42,7 +42,8 @@ nmake /nologo /f Makefile.msvc clean
 ## 使い方
 
 ```
-gale lex examples/hello.gale   # トークン列を表示
+gale lex examples/hello.gale     # トークン列を表示
+gale parse examples/hello.gale   # 構文木(S式)を表示
 gale --version
 ```
 
@@ -51,7 +52,7 @@ gale --version
 | 段階 | 状態 |
 |------|------|
 | 字句解析 | 実装済み |
-| 構文解析 | 未着手 |
+| 構文解析 | 実装済み(AST と `gale parse`) |
 | `unfold` 展開 | 未着手 |
 | 型検査 | 未着手 |
 | IR / 独自アセンブリ | 未着手 |
