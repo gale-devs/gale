@@ -124,6 +124,7 @@ static Expr *new_expr(Parser *p, ExprKind kind, const Token *t) {
 }
 
 static Expr *parse_expr(Parser *p);
+static Type *parse_type_prefix(Parser *p);
 
 static Expr *parse_primary(Parser *p) {
     Token *t = cur(p);
@@ -227,8 +228,121 @@ static Expr *parse_postfix(Parser *p) {
     return e;
 }
 
+static Expr *parse_unary(Parser *p) {
+    Token *t = cur(p);
+
+    switch (t->kind) {
+    case TOK_MINUS:
+    case TOK_BANG:
+    case TOK_TILDE:
+    case TOK_STAR:
+    case TOK_AMP:
+    case TOK_KW_TRY: {
+        Expr *e = new_expr(p, EXPR_UNARY, t);
+        next(p);
+        e->u.unary.op = t->kind;
+        e->u.unary.operand = parse_unary(p);
+        return e;
+    }
+    default:
+        return parse_postfix(p);
+    }
+}
+
+/* `expr as T` binds tighter than the binary operators and looser than unary ones. */
+static Expr *parse_cast(Parser *p) {
+    Expr *e = parse_unary(p);
+
+    while (at(p, TOK_KW_AS) && !cur(p)->nl_before) {
+        Expr *c = new_expr(p, EXPR_CAST, cur(p));
+        next(p);
+        c->line = e->line;
+        c->col = e->col;
+        c->u.cast.operand = e;
+        c->u.cast.type = parse_type_prefix(p);
+        e = c;
+    }
+    return e;
+}
+
+static int binary_prec(TokenKind k) {
+    switch (k) {
+    case TOK_OROR:
+        return 1;
+    case TOK_ANDAND:
+        return 2;
+    case TOK_EQ:
+    case TOK_NE:
+    case TOK_LT:
+    case TOK_LE:
+    case TOK_GT:
+    case TOK_GE:
+        return 3;
+    case TOK_PIPE:
+        return 4;
+    case TOK_CARET:
+        return 5;
+    case TOK_AMP:
+        return 6;
+    case TOK_SHL:
+    case TOK_SHR:
+        return 7;
+    case TOK_PLUS:
+    case TOK_MINUS:
+        return 8;
+    case TOK_STAR:
+    case TOK_SLASH:
+    case TOK_PERCENT:
+        return 9;
+    default:
+        return 0;
+    }
+}
+
+/* Binary operators are left-associative. An operator must be on the same line as
+ * its left operand (a line may end with an operator, but not start with one). */
+static Expr *parse_binary(Parser *p, int min_prec) {
+    Expr *lhs = parse_cast(p);
+
+    for (;;) {
+        Token *t = cur(p);
+        int prec;
+        Expr *e;
+
+        if (t->nl_before) {
+            break;
+        }
+        prec = binary_prec(t->kind);
+        if (prec == 0 || prec < min_prec) {
+            break;
+        }
+        next(p);
+        e = new_expr(p, EXPR_BINARY, t);
+        e->line = lhs->line;
+        e->col = lhs->col;
+        e->u.binary.op = t->kind;
+        e->u.binary.lhs = lhs;
+        e->u.binary.rhs = parse_binary(p, prec + 1);
+        lhs = e;
+    }
+    return lhs;
+}
+
+/* Assignment is an expression, right-associative, with the lowest precedence. */
 static Expr *parse_expr(Parser *p) {
-    return parse_postfix(p);
+    Expr *lhs = parse_binary(p, 1);
+
+    if (at(p, TOK_ASSIGN) && !cur(p)->nl_before) {
+        Token *t = next(p);
+        Expr *e = new_expr(p, EXPR_ASSIGN, t);
+        e->line = lhs->line;
+        e->col = lhs->col;
+        e->u.binary.op = TOK_ASSIGN;
+        e->u.binary.lhs = lhs;
+        e->u.binary.rhs = parse_expr(p);
+        return e;
+    }
+    return lhs;
 }
 
 /* ---- types ---- */
