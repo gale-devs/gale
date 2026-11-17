@@ -8,8 +8,8 @@ CC = cl
 CFLAGS = /nologo /std:c11 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /Isrc
 BUILD = build
 
-LIB_SRCS = src\lexer.c
-HDRS = src\lexer.h
+LIB_SRCS = src\lexer.c src\arena.c
+HDRS = src\lexer.h src\arena.h
 
 all: $(BUILD)\gale.exe
 
@@ -21,8 +21,13 @@ $(BUILD)\test_lexer.exe: tests\test_lexer.c $(LIB_SRCS) $(HDRS)
 	@if not exist $(BUILD) mkdir $(BUILD)
 	$(CC) $(CFLAGS) /Fo$(BUILD)\ /Fe$@ tests\test_lexer.c $(LIB_SRCS)
 
-test: $(BUILD)\gale.exe $(BUILD)\test_lexer.exe
+$(BUILD)\test_arena.exe: tests\test_arena.c $(LIB_SRCS) $(HDRS)
+	@if not exist $(BUILD) mkdir $(BUILD)
+	$(CC) $(CFLAGS) /Fo$(BUILD)\ /Fe$@ tests\test_arena.c $(LIB_SRCS)
+
+test: $(BUILD)\gale.exe $(BUILD)\test_lexer.exe $(BUILD)\test_arena.exe
 	$(BUILD)\test_lexer.exe
+	$(BUILD)\test_arena.exe
 	@for %%f in (examples\*.gale) do (echo lex %%f && $(BUILD)\gale.exe lex %%f > nul || exit 1)
 
 clean:
