@@ -4,42 +4,11 @@
 
 #include "arena.h"
 #include "ast.h"
+#include "fsutil.h"
 #include "lexer.h"
 #include "parser.h"
 
 #define GALE_VERSION "0.0.1"
-
-static char *read_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    long size;
-    char *buf;
-
-    if (!f) {
-        return NULL;
-    }
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    size = ftell(f);
-    if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    buf = malloc((size_t)size + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    buf[size] = '\0';
-    fclose(f);
-    return buf;
-}
 
 static int cmd_lex(const char *path) {
     char *src = read_file(path);
