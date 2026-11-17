@@ -41,8 +41,9 @@ test: $(GALE) $(TESTS)
 		$$t || exit 1; \
 	done
 	@for f in examples/*.gale; do \
-		echo "lex $$f"; \
+		echo "lex+parse $$f"; \
 		$(GALE) lex $$f > /dev/null || exit 1; \
+		$(GALE) parse $$f > /dev/null || exit 1; \
 	done
 
 clean:
