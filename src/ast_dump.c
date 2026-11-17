@@ -52,6 +52,34 @@ static void put_path(Buf *b, Path p) {
 
 static void dump_expr(Buf *b, const Expr *e);
 
+static const char *op_text(TokenKind k) {
+    switch (k) {
+    case TOK_PLUS: return "+";
+    case TOK_MINUS: return "-";
+    case TOK_STAR: return "*";
+    case TOK_SLASH: return "/";
+    case TOK_PERCENT: return "%";
+    case TOK_AMP: return "&";
+    case TOK_PIPE: return "|";
+    case TOK_CARET: return "^";
+    case TOK_TILDE: return "~";
+    case TOK_BANG: return "!";
+    case TOK_ANDAND: return "&&";
+    case TOK_OROR: return "||";
+    case TOK_SHL: return "<<";
+    case TOK_SHR: return ">>";
+    case TOK_EQ: return "==";
+    case TOK_NE: return "!=";
+    case TOK_LT: return "<";
+    case TOK_LE: return "<=";
+    case TOK_GT: return ">";
+    case TOK_GE: return ">=";
+    case TOK_ASSIGN: return "=";
+    case TOK_KW_TRY: return "try";
+    default: return "?";
+    }
+}
+
 static void dump_type(Buf *b, const Type *t) {
     switch (t->kind) {
     case TYPE_PATH:
@@ -97,6 +125,37 @@ static void dump_expr(Buf *b, const Expr *e) {
         break;
     case EXPR_BOOL:
         put(b, e->u.boolean ? "true" : "false");
+        break;
+    case EXPR_UNARY: {
+        const char *op = op_text(e->u.unary.op);
+        if (e->u.unary.op == TOK_STAR) {
+            op = "deref";
+        } else if (e->u.unary.op == TOK_AMP) {
+            op = "addr";
+        }
+        put(b, "(");
+        put(b, op);
+        put(b, " ");
+        dump_expr(b, e->u.unary.operand);
+        put(b, ")");
+        break;
+    }
+    case EXPR_BINARY:
+    case EXPR_ASSIGN:
+        put(b, "(");
+        put(b, op_text(e->u.binary.op));
+        put(b, " ");
+        dump_expr(b, e->u.binary.lhs);
+        put(b, " ");
+        dump_expr(b, e->u.binary.rhs);
+        put(b, ")");
+        break;
+    case EXPR_CAST:
+        put(b, "(as ");
+        dump_expr(b, e->u.cast.operand);
+        put(b, " ");
+        dump_type(b, e->u.cast.type);
+        put(b, ")");
         break;
     case EXPR_CALL: {
         size_t i;
