@@ -125,3 +125,79 @@ json = { git = "https://github.com/x/json", tag = "v1.2.0" }
 1. stage0: C 製のコンパイラ(小さなサブセットを実装)
 2. stage1: コンパイラ自身を Gale で書き、stage0 でコンパイルする
 3. stage2: stage1 で自分自身をコンパイルし、出力が一致すれば完了
+
+## 16. 文法(パーサの実装に対応)
+
+```
+file     = { member }                       ※ファイル直下にフィールドは置けない
+member   = field | item
+field    = IDENT ":" type
+item     = [ "export" ] ( unfold | func | struct )
+unfold   = "unfold" path
+func     = "func" IDENT "(" [ param { "," param } [ "," ] ] ")" [ "->" type ] "=" expr
+param    = IDENT ":" type
+struct   = "struct" IDENT "=" "{" { member } "}"
+path     = IDENT { "." IDENT }
+
+type     = prefix [ "!" ]                   ※ "!" は同じ行になければならない
+prefix   = "*" prefix | "?" prefix | "[" "]" prefix | "[" expr "]" prefix | path
+
+expr     = binary [ "=" expr ]              ※代入は右結合
+binary   = cast { binop cast }              ※二項演算子は左結合
+cast     = unary { "as" prefix }
+unary    = ( "-" | "!" | "~" | "*" | "&" | "try" ) unary | postfix
+postfix  = primary { "(" [ expr { "," expr } [ "," ] ] ")" | "[" expr "]" | "." IDENT | structlit }
+primary  = INT | FLOAT | STRING | "true" | "false" | IDENT | "(" expr ")" | block | if | while
+structlit= "{" [ IDENT ":" expr { "," IDENT ":" expr } [ "," ] ] "}"   ※path の直後のみ
+block    = "{" { stmt } [ expr ] "}"        ※最後の式(`;` なし)がブロックの値
+stmt     = ( "let" | "var" ) IDENT [ ":" type ] "=" expr
+         | "defer" expr | "return" [ expr ] | expr | ";"
+if       = "if" expr block [ "else" ( if | block ) ]
+while    = "while" expr block
+```
+
+二項演算子の優先順位(低い順):
+
+| 優先順位 | 演算子 |
+|---|---|
+| 1 | `\|\|` |
+| 2 | `&&` |
+| 3 | `==` `!=` `<` `<=` `>` `>=` |
+| 4 | `\|` |
+| 5 | `^` |
+| 6 | `&` |
+| 7 | `<<` `>>` |
+| 8 | `+` `-` |
+| 9 | `*` `/` `%` |
+
+`as` は二項演算子より強く、単項演算子より弱い(`-a as u8` は `(-a) as u8`)。
+
+### 改行と区切り
+
+- メンバ(フィールド・項目)と文は、`,` か `;` か**改行**で区切る。`}` の直前は区切り不要
+- 二項演算子・`=`・`as`・後置の `(` `[` `.` は、**左の式と同じ行になければならない**。
+  行末に演算子を置いて次の行へ続けるのはよいが、行頭に演算子を置くと新しい文として扱われる
+  (`a` の次の行の `-b` や `(b)` は、前の行の続きにならない)
+- `else` は前の `}` と別の行に置いてもよい
+- `return` は、同じ行に値がなければ値なしの `return` になる
+
+### struct リテラルと条件式
+
+- `Name { field: value }` は、`Name` が名前のパス(`a.b.C`)で、`{` の次が `}` か `名前 :` のときだけ struct リテラル
+- `if` と `while` の条件式の中では struct リテラルは無効(`if x { ... }` の `{` が本体になる)。
+  条件の中でリテラルを使うときは括弧で囲む: `if (P { x: 1 }) == q { ... }`
+
+### 注意点
+
+- `-> T!` の後ろの `=` とは空白を空ける。`T!=` は `!=` として読まれるため、エラーになる
+- 戻り値型を省略すると `void`
+- ネストは 256 段、`a+b+c...` や `a.b.c...` の連なりは 10000 個まで
+
+### 構文木のダンプ
+
+`gale parse <file>` は、構文木を S 式で表示する(テストでも使う)。
+
+```
+(unfold std.console)
+(export func main () void (block (tail (call (. (. std console) println) "Hello, World!"))))
+```
