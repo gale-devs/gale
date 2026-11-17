@@ -98,6 +98,31 @@ static void dump_expr(Buf *b, const Expr *e) {
     case EXPR_BOOL:
         put(b, e->u.boolean ? "true" : "false");
         break;
+    case EXPR_CALL: {
+        size_t i;
+        put(b, "(call ");
+        dump_expr(b, e->u.call.callee);
+        for (i = 0; i < e->u.call.nargs; i++) {
+            put(b, " ");
+            dump_expr(b, e->u.call.args[i]);
+        }
+        put(b, ")");
+        break;
+    }
+    case EXPR_INDEX:
+        put(b, "(index ");
+        dump_expr(b, e->u.index.base);
+        put(b, " ");
+        dump_expr(b, e->u.index.index);
+        put(b, ")");
+        break;
+    case EXPR_FIELD:
+        put(b, "(. ");
+        dump_expr(b, e->u.field.base);
+        put(b, " ");
+        put_str(b, e->u.field.name);
+        put(b, ")");
+        break;
     default:
         put(b, "?");
         break;
