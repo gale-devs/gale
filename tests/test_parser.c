@@ -74,6 +74,16 @@ static void test_types(void) {
           "(struct T (a (ptr (slice u8))) (b (array 2 (array 3 i32))) (c (err (opt i32))))");
 }
 
+static void test_func(void) {
+    check("func a() = 1", "(func a () void 1)");
+    check("export func f(x: i32, p: *u8,) -> i32! = 2.5",
+          "(export func f ((x i32) (p (ptr u8))) (err i32) 2.5)");
+    check("func g(s: []u8) -> bool = (true)", "(func g ((s (slice u8))) bool true)");
+    check("func h() = \"hi\"\nfunc k() = false", "(func h () void \"hi\")\n(func k () void false)");
+    check("struct S = { func m(x: i32) -> i32 = x\n n: i32 }",
+          "(struct S (n i32) (func m ((x i32)) i32 x))");
+}
+
 static void test_errors(void) {
     check_error("struct = {}", 1, 8, "expected a struct name");
     check_error("x: i32", 1, 1, "fields are not allowed at file level");
@@ -83,12 +93,19 @@ static void test_errors(void) {
     check_error("struct S = { x: i32 y: i32 }", 1, 21, "expected ',' or a newline");
     check_error("struct S = { x: }", 1, 17, "expected a type");
     check_error("struct S = { 1 }", 1, 14, "expected a field or an item");
+    check_error("func = 1", 1, 6, "expected a function name");
+    check_error("func f( = 1", 1, 9, "expected a parameter name");
+    check_error("func f() 1", 1, 10, "expected '='");
+    check_error("func f() =", 1, 11, "expected an expression, found end of file");
+    check_error("func f() = )", 1, 12, "expected an expression, found ')'");
+    check_error("func f() -> i32!= 1", 1, 16, "write 'T! =' with a space");
 }
 
 int main(void) {
     test_unfold();
     test_struct();
     test_types();
+    test_func();
     test_errors();
 
     if (failures) {
