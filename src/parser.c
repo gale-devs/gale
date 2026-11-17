@@ -5,13 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_MSC_VER)
-#define NORETURN __declspec(noreturn)
-#elif defined(__GNUC__)
-#define NORETURN __attribute__((noreturn))
-#else
-#define NORETURN
-#endif
+#include "common.h"
 
 /* Recursion and chain limits keep hostile or generated input from overflowing the
  * stack here or in later passes that walk the tree recursively. */
