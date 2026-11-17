@@ -170,8 +170,65 @@ static Expr *parse_primary(Parser *p) {
     }
 }
 
+/* Postfix operators must start on the same line as the expression they apply to,
+ * so a line beginning with '(' or '[' starts a new statement. */
+static Expr *parse_postfix(Parser *p) {
+    Expr *e = parse_primary(p);
+
+    for (;;) {
+        Token *t = cur(p);
+        Expr *n;
+
+        if (t->nl_before) {
+            break;
+        }
+        if (t->kind == TOK_LPAREN) {
+            Vec args;
+            int saved = p->no_struct;
+
+            next(p);
+            p->no_struct = 0;
+            vec_init(&args, sizeof(Expr *));
+            while (!at(p, TOK_RPAREN)) {
+                Expr *a = parse_expr(p);
+                vec_push(p->arena, &args, &a);
+                if (!eat(p, TOK_COMMA)) {
+                    break;
+                }
+            }
+            p->no_struct = saved;
+            expect(p, TOK_RPAREN, "')'");
+            n = new_expr(p, EXPR_CALL, t);
+            n->u.call.callee = e;
+            n->u.call.args = args.data;
+            n->u.call.nargs = args.len;
+        } else if (t->kind == TOK_LBRACKET) {
+            int saved = p->no_struct;
+
+            next(p);
+            p->no_struct = 0;
+            n = new_expr(p, EXPR_INDEX, t);
+            n->u.index.base = e;
+            n->u.index.index = parse_expr(p);
+            p->no_struct = saved;
+            expect(p, TOK_RBRACKET, "']'");
+        } else if (t->kind == TOK_DOT) {
+            next(p);
+            n = new_expr(p, EXPR_FIELD, t);
+            n->u.field.base = e;
+            n->u.field.name = expect_ident(p, "a field name");
+        } else {
+            break;
+        }
+        n->line = e->line;
+        n->col = e->col;
+        e = n;
+    }
+    return e;
+}
+
 static Expr *parse_expr(Parser *p) {
-    return parse_primary(p);
+    return parse_postfix(p);
 }
 
 /* ---- types ---- */
