@@ -1,0 +1,29 @@
+# NMAKE makefile for MSVC (cl.exe).
+# Run from a "Developer Command Prompt for VS" (or after vcvars64.bat):
+#   nmake /nologo /f Makefile.msvc          build build\gale.exe
+#   nmake /nologo /f Makefile.msvc test     build and run the tests
+#   nmake /nologo /f Makefile.msvc clean
+
+CC = cl
+CFLAGS = /nologo /std:c11 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /Isrc
+BUILD = build
+
+LIB_SRCS = src\lexer.c
+HDRS = src\lexer.h
+
+all: $(BUILD)\gale.exe
+
+$(BUILD)\gale.exe: src\main.c $(LIB_SRCS) $(HDRS)
+	@if not exist $(BUILD) mkdir $(BUILD)
+	$(CC) $(CFLAGS) /Fo$(BUILD)\ /Fe$@ src\main.c $(LIB_SRCS)
+
+$(BUILD)\test_lexer.exe: tests\test_lexer.c $(LIB_SRCS) $(HDRS)
+	@if not exist $(BUILD) mkdir $(BUILD)
+	$(CC) $(CFLAGS) /Fo$(BUILD)\ /Fe$@ tests\test_lexer.c $(LIB_SRCS)
+
+test: $(BUILD)\gale.exe $(BUILD)\test_lexer.exe
+	$(BUILD)\test_lexer.exe
+	@for %%f in (examples\*.gale) do (echo lex %%f && $(BUILD)\gale.exe lex %%f > nul || exit 1)
+
+clean:
+	@if exist $(BUILD) rmdir /s /q $(BUILD)
