@@ -95,6 +95,9 @@ static void dump_expr(Buf *b, const Expr *e) {
     case EXPR_IDENT:
         put_str(b, e->u.lit);
         break;
+    case EXPR_BOOL:
+        put(b, e->u.boolean ? "true" : "false");
+        break;
     default:
         put(b, "?");
         break;
@@ -133,9 +136,31 @@ static void dump_item(Buf *b, const Item *it) {
         put_str(b, it->u.struct_.name);
         dump_body(b, &it->u.struct_.body);
         break;
-    case ITEM_FUNC:
-        put(b, "func ?");
+    case ITEM_FUNC: {
+        size_t i;
+        put(b, "func ");
+        put_str(b, it->u.func.name);
+        put(b, " (");
+        for (i = 0; i < it->u.func.nparams; i++) {
+            if (i) {
+                put(b, " ");
+            }
+            put(b, "(");
+            put_str(b, it->u.func.params[i]->name);
+            put(b, " ");
+            dump_type(b, it->u.func.params[i]->type);
+            put(b, ")");
+        }
+        put(b, ") ");
+        if (it->u.func.ret) {
+            dump_type(b, it->u.func.ret);
+        } else {
+            put(b, "void");
+        }
+        put(b, " ");
+        dump_expr(b, it->u.func.body);
         break;
+    }
     }
     put(b, ")");
 }
