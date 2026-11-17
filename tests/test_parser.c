@@ -1,0 +1,100 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "arena.h"
+#include "ast.h"
+#include "parser.h"
+
+static int failures = 0;
+
+/* Parses src and compares the S-expression dump with want. */
+static void check(const char *src, const char *want) {
+    Arena a;
+    ParseError err;
+    File *f;
+    char *got;
+
+    arena_init(&a);
+    f = parse_file(src, &a, &err);
+    if (!f) {
+        fprintf(stderr, "parse failed for:\n%s\n  at %d:%d: %s\n", src, err.line, err.col, err.msg);
+        failures++;
+        arena_free(&a);
+        return;
+    }
+    got = ast_dump(f);
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "dump mismatch for:\n%s\n  got:  %s\n  want: %s\n", src, got, want);
+        failures++;
+    }
+    free(got);
+    arena_free(&a);
+}
+
+/* Parsing src must fail at line:col with a message containing msg. */
+static void check_error(const char *src, int line, int col, const char *msg) {
+    Arena a;
+    ParseError err;
+    File *f;
+
+    arena_init(&a);
+    f = parse_file(src, &a, &err);
+    if (f) {
+        fprintf(stderr, "expected a parse error for:\n%s\n", src);
+        failures++;
+    } else if (err.line != line || err.col != col || !strstr(err.msg, msg)) {
+        fprintf(stderr, "wrong error for:\n%s\n  got:  %d:%d: %s\n  want: %d:%d: ...%s...\n", src,
+                err.line, err.col, err.msg, line, col, msg);
+        failures++;
+    }
+    arena_free(&a);
+}
+
+static void test_unfold(void) {
+    check("", "");
+    check("unfold std.console\n", "(unfold std.console)");
+    check("export unfold a.b", "(export unfold a.b)");
+    check("unfold a\nunfold b.c.d\n", "(unfold a)\n(unfold b.c.d)");
+}
+
+static void test_struct(void) {
+    check("struct E = {}", "(struct E)");
+    check("struct Point = { x: f64, y: f64 }", "(struct Point (x f64) (y f64))");
+    check("export struct P = {\n  x: i32\n  y: i32,\n}\n", "(export struct P (x i32) (y i32))");
+    check("struct Outer = {\n  struct Inner = { v: i32 }\n  w: i32\n}\n",
+          "(struct Outer (w i32) (struct Inner (v i32)))");
+}
+
+static void test_types(void) {
+    check("struct T = { a: *i32, b: ?*u8, c: []u8, d: [4]i32, e: i32!, f: std.mem.Alloc }",
+          "(struct T (a (ptr i32)) (b (opt (ptr u8))) (c (slice u8)) (d (array 4 i32)) "
+          "(e (err i32)) (f std.mem.Alloc))");
+    check("struct T = { a: *[]u8, b: [2][3]i32, c: ?i32! }",
+          "(struct T (a (ptr (slice u8))) (b (array 2 (array 3 i32))) (c (err (opt i32))))");
+}
+
+static void test_errors(void) {
+    check_error("struct = {}", 1, 8, "expected a struct name");
+    check_error("x: i32", 1, 1, "fields are not allowed at file level");
+    check_error("unfold", 1, 7, "expected a name, found end of file");
+    check_error("unfold a.b @", 1, 12, "unexpected character");
+    check_error("struct S = { x: i32", 1, 20, "expected '}'");
+    check_error("struct S = { x: i32 y: i32 }", 1, 21, "expected ',' or a newline");
+    check_error("struct S = { x: }", 1, 17, "expected a type");
+    check_error("struct S = { 1 }", 1, 14, "expected a field or an item");
+}
+
+int main(void) {
+    test_unfold();
+    test_struct();
+    test_types();
+    test_errors();
+
+    if (failures) {
+        fprintf(stderr, "%d test(s) failed\n", failures);
+        return 1;
+    }
+    printf("parser: all tests passed\n");
+    return 0;
+}
