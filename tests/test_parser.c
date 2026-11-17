@@ -168,6 +168,24 @@ static void test_statements(void) {
     check_expr("{ x = 1; x }", "(block (expr (= x 1)) (tail x))");
 }
 
+static void test_control_flow(void) {
+    check_expr("if a { 1 } else { 2 }", "(if a (block (tail 1)) (block (tail 2)))");
+    check_expr("if a {}", "(if a (block))");
+    check_expr("if a { 1 } else if b { 2 } else { 3 }",
+               "(if a (block (tail 1)) (if b (block (tail 2)) (block (tail 3))))");
+    check_expr("if x < 0 { -x } else { x }", "(if (< x 0) (block (tail (- x))) (block (tail x)))");
+    check_expr("if f(a, b) { 1 }", "(if (call f a b) (block (tail 1)))");
+    check("func f() = if a {\n  1\n}\nelse {\n  2\n}",
+          "(func f () void (if a (block (tail 1)) (block (tail 2))))");
+    check_expr("while i < n { i = i + 1 }", "(while (< i n) (block (tail (= i (+ i 1)))))");
+    check_expr("{ let v = if a { 1 } else { 2 }\n v }",
+               "(block (let v (if a (block (tail 1)) (block (tail 2)))) (tail v))");
+    check_expr("{ if a { f() }\n g() }",
+               "(block (expr (if a (block (tail (call f))))) (tail (call g)))");
+    check_expr("{ while a { b }\n while c { d } }",
+               "(block (expr (while a (block (tail b)))) (tail (while c (block (tail d)))))");
+}
+
 static void test_hello_world(void) {
     check("unfold std.console\n\nexport func main() -> void = {\n"
           "    std.console.println(\"Hello, World!\")\n}\n",
@@ -195,6 +213,10 @@ static void test_errors(void) {
     check_error("func f() = { let = 1 }", 1, 18, "expected a variable name");
     check_error("func f() = { let x 1 }", 1, 20, "expected '='");
     check_error("func f() = { return 1 2 }", 1, 23, "expected ';' or a newline");
+    check_error("func f() = if a b", 1, 17, "expected '{', found 'b'");
+    check_error("func f() = if a {} else 1", 1, 25, "expected '{', found '1'");
+    check_error("func f() = else", 1, 12, "expected an expression, found 'else'");
+    check_error("func f() = while a", 1, 19, "expected '{', found end of file");
     check_error("func f() = a.", 1, 14, "expected a field name");
     check_error("func f() = a(1 2)", 1, 16, "expected ')'");
     check_error("func f() = a[1", 1, 15, "expected ']'");
@@ -212,6 +234,7 @@ int main(void) {
     test_operator_lines();
     test_blocks();
     test_statements();
+    test_control_flow();
     test_hello_world();
     test_errors();
 
