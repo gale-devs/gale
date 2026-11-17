@@ -123,7 +123,9 @@ static Expr *new_expr(Parser *p, ExprKind kind, const Token *t) {
     return e;
 }
 
-static Expr *parse_expr(Parser *p) {
+static Expr *parse_expr(Parser *p);
+
+static Expr *parse_primary(Parser *p) {
     Token *t = cur(p);
     Expr *e;
 
@@ -133,14 +135,43 @@ static Expr *parse_expr(Parser *p) {
         e->u.lit = tok_str(t);
         next(p);
         return e;
+    case TOK_FLOAT:
+        e = new_expr(p, EXPR_FLOAT, t);
+        e->u.lit = tok_str(t);
+        next(p);
+        return e;
+    case TOK_STRING:
+        e = new_expr(p, EXPR_STRING, t);
+        e->u.lit = tok_str(t);
+        next(p);
+        return e;
+    case TOK_KW_TRUE:
+    case TOK_KW_FALSE:
+        e = new_expr(p, EXPR_BOOL, t);
+        e->u.boolean = (t->kind == TOK_KW_TRUE);
+        next(p);
+        return e;
     case TOK_IDENT:
         e = new_expr(p, EXPR_IDENT, t);
         e->u.lit = tok_str(t);
         next(p);
         return e;
+    case TOK_LPAREN: {
+        int saved = p->no_struct;
+        next(p);
+        p->no_struct = 0;
+        e = parse_expr(p);
+        p->no_struct = saved;
+        expect(p, TOK_RPAREN, "')'");
+        return e;
+    }
     default:
         fail_expected(p, "an expression");
     }
+}
+
+static Expr *parse_expr(Parser *p) {
+    return parse_primary(p);
 }
 
 /* ---- types ---- */
@@ -235,7 +266,7 @@ static void parse_body(Parser *p, Body *body, int allow_fields, TokenKind end) {
             f->type = parse_type(p);
             vec_push(p->arena, &fields, &f);
         } else if (t->kind == TOK_KW_EXPORT || t->kind == TOK_KW_UNFOLD ||
-                   t->kind == TOK_KW_STRUCT) {
+                   t->kind == TOK_KW_FUNC || t->kind == TOK_KW_STRUCT) {
             Item *it = parse_item(p);
             vec_push(p->arena, &items, &it);
         } else {
@@ -256,6 +287,40 @@ static void parse_body(Parser *p, Body *body, int allow_fields, TokenKind end) {
     body->nitems = items.len;
 }
 
+static void parse_func(Parser *p, Item *it) {
+    Vec params;
+
+    it->kind = ITEM_FUNC;
+    it->u.func.name = expect_ident(p, "a function name");
+    expect(p, TOK_LPAREN, "'('");
+    vec_init(&params, sizeof(Param *));
+    while (!at(p, TOK_RPAREN)) {
+        Token *t = cur(p);
+        Param *pa = arena_alloc(p->arena, sizeof(Param));
+        pa->name = expect_ident(p, "a parameter name");
+        pa->line = t->line;
+        pa->col = t->col;
+        expect(p, TOK_COLON, "':'");
+        pa->type = parse_type(p);
+        vec_push(p->arena, &params, &pa);
+        if (!eat(p, TOK_COMMA)) {
+            break;
+        }
+    }
+    expect(p, TOK_RPAREN, "')'");
+    it->u.func.params = params.data;
+    it->u.func.nparams = params.len;
+
+    if (eat(p, TOK_ARROW)) {
+        it->u.func.ret = parse_type(p);
+        if (at(p, TOK_NE)) {
+            fail(p, cur(p), "expected '=', found '!=' (write 'T! =' with a space)");
+        }
+    }
+    expect(p, TOK_ASSIGN, "'='");
+    it->u.func.body = parse_expr(p);
+}
+
 static Item *parse_item(Parser *p) {
     Token *start = cur(p);
     Item *it = arena_alloc(p->arena, sizeof(Item));
@@ -270,6 +335,10 @@ static Item *parse_item(Parser *p) {
         it->kind = ITEM_UNFOLD;
         it->u.unfold = parse_path(p);
         break;
+    case TOK_KW_FUNC:
+        next(p);
+        parse_func(p, it);
+        break;
     case TOK_KW_STRUCT:
         next(p);
         it->kind = ITEM_STRUCT;
@@ -280,7 +349,7 @@ static Item *parse_item(Parser *p) {
         expect(p, TOK_RBRACE, "'}'");
         break;
     default:
-        fail_expected(p, "'unfold' or 'struct'");
+        fail_expected(p, "'unfold', 'func' or 'struct'");
     }
     return it;
 }
