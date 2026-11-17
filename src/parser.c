@@ -13,12 +13,18 @@
 #define NORETURN
 #endif
 
+/* Recursion and chain limits keep hostile or generated input from overflowing the
+ * stack here or in later passes that walk the tree recursively. */
+#define MAX_DEPTH 256
+#define MAX_CHAIN 10000
+
 typedef struct {
     Arena *arena;
     Token *toks; /* all tokens, ending with TOK_EOF */
     size_t ntoks;
     size_t pos;
     int no_struct; /* 1 while parsing an if/while condition: `Name {` is not a struct literal */
+    int depth;     /* current nesting depth, see MAX_DEPTH */
     ParseError *err;
     jmp_buf jb;
 } Parser;
@@ -91,6 +97,22 @@ static Str tok_str(const Token *t) {
 
 static Str expect_ident(Parser *p, const char *what) {
     return tok_str(expect(p, TOK_IDENT, what));
+}
+
+static void enter(Parser *p) {
+    if (++p->depth > MAX_DEPTH) {
+        fail(p, cur(p), "nesting is too deep");
+    }
+}
+
+static void leave(Parser *p) {
+    p->depth--;
+}
+
+static void check_chain(Parser *p, size_t n) {
+    if (n > MAX_CHAIN) {
+        fail(p, cur(p), "expression is too long");
+    }
 }
 
 /* ---- paths ---- */
@@ -256,6 +278,7 @@ static Expr *parse_struct_lit(Parser *p, const Expr *path_expr, size_t path_len)
  * so a line beginning with '(' or '[' starts a new statement. */
 static Expr *parse_postfix(Parser *p) {
     Expr *e = parse_primary(p);
+    size_t chain = 0;
 
     for (;;) {
         Token *t = cur(p);
@@ -264,6 +287,7 @@ static Expr *parse_postfix(Parser *p) {
         if (t->nl_before) {
             break;
         }
+        check_chain(p, ++chain);
         if (t->kind == TOK_LPAREN) {
             Vec args;
             int saved = p->no_struct;
@@ -325,7 +349,9 @@ static Expr *parse_unary(Parser *p) {
         Expr *e = new_expr(p, EXPR_UNARY, t);
         next(p);
         e->u.unary.op = t->kind;
+        enter(p);
         e->u.unary.operand = parse_unary(p);
+        leave(p);
         return e;
     }
     default:
@@ -336,9 +362,11 @@ static Expr *parse_unary(Parser *p) {
 /* `expr as T` binds tighter than the binary operators and looser than unary ones. */
 static Expr *parse_cast(Parser *p) {
     Expr *e = parse_unary(p);
+    size_t chain = 0;
 
     while (at(p, TOK_KW_AS) && !cur(p)->nl_before) {
         Expr *c = new_expr(p, EXPR_CAST, cur(p));
+        check_chain(p, ++chain);
         next(p);
         c->line = e->line;
         c->col = e->col;
@@ -387,6 +415,7 @@ static int binary_prec(TokenKind k) {
  * its left operand (a line may end with an operator, but not start with one). */
 static Expr *parse_binary(Parser *p, int min_prec) {
     Expr *lhs = parse_cast(p);
+    size_t chain = 0;
 
     for (;;) {
         Token *t = cur(p);
@@ -400,6 +429,7 @@ static Expr *parse_binary(Parser *p, int min_prec) {
         if (prec == 0 || prec < min_prec) {
             break;
         }
+        check_chain(p, ++chain);
         next(p);
         e = new_expr(p, EXPR_BINARY, t);
         e->line = lhs->line;
@@ -413,7 +443,7 @@ static Expr *parse_binary(Parser *p, int min_prec) {
 }
 
 /* Assignment is an expression, right-associative, with the lowest precedence. */
-static Expr *parse_expr(Parser *p) {
+static Expr *parse_assign(Parser *p) {
     Expr *lhs = parse_binary(p, 1);
 
     if (at(p, TOK_ASSIGN) && !cur(p)->nl_before) {
@@ -427,6 +457,14 @@ static Expr *parse_expr(Parser *p) {
         return e;
     }
     return lhs;
+}
+
+static Expr *parse_expr(Parser *p) {
+    Expr *e;
+    enter(p);
+    e = parse_assign(p);
+    leave(p);
+    return e;
 }
 
 /* ---- blocks and statements ---- */
@@ -548,7 +586,9 @@ static Expr *parse_if(Parser *p) {
     e->u.if_.then_block = parse_block(p);
     if (eat(p, TOK_KW_ELSE)) {
         if (at(p, TOK_KW_IF)) {
+            enter(p);
             e->u.if_.else_expr = parse_if(p);
+            leave(p);
         } else {
             e->u.if_.else_expr = parse_block(p);
         }
@@ -581,14 +621,20 @@ static Type *parse_type_prefix(Parser *p) {
 
     if (eat(p, TOK_STAR)) {
         ty = new_type(p, TYPE_PTR, t);
+        enter(p);
         ty->u.elem = parse_type_prefix(p);
+        leave(p);
     } else if (eat(p, TOK_QUESTION)) {
         ty = new_type(p, TYPE_OPTIONAL, t);
+        enter(p);
         ty->u.elem = parse_type_prefix(p);
+        leave(p);
     } else if (eat(p, TOK_LBRACKET)) {
         if (eat(p, TOK_RBRACKET)) {
             ty = new_type(p, TYPE_SLICE, t);
+            enter(p);
             ty->u.elem = parse_type_prefix(p);
+            leave(p);
         } else {
             int saved = p->no_struct;
             ty = new_type(p, TYPE_ARRAY, t);
@@ -596,7 +642,9 @@ static Type *parse_type_prefix(Parser *p) {
             ty->u.array.len = parse_expr(p);
             p->no_struct = saved;
             expect(p, TOK_RBRACKET, "']'");
+            enter(p);
             ty->u.array.elem = parse_type_prefix(p);
+            leave(p);
         }
     } else if (at(p, TOK_IDENT)) {
         ty = new_type(p, TYPE_PATH, t);
@@ -716,6 +764,7 @@ static Item *parse_item(Parser *p) {
     Token *start = cur(p);
     Item *it = arena_alloc(p->arena, sizeof(Item));
 
+    enter(p);
     it->line = start->line;
     it->col = start->col;
     it->exported = eat(p, TOK_KW_EXPORT);
@@ -742,6 +791,7 @@ static Item *parse_item(Parser *p) {
     default:
         fail_expected(p, "'unfold', 'func' or 'struct'");
     }
+    leave(p);
     return it;
 }
 
