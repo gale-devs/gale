@@ -1,0 +1,4 @@
+struct S = {
+  unfold lib.math
+  x: i32
+}

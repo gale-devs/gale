@@ -1,0 +1,4 @@
+unfold lib.math
+struct lib = {
+  struct math = { func add() = 0 }
+}

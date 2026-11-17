@@ -1,0 +1,3 @@
+unfold lib.math
+
+export func ping() = lib.math.add(1, 1)

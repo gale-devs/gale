@@ -1,0 +1,3 @@
+unfold lib.math
+
+func main() = lib.math.add(1, 2)

@@ -1,0 +1,2 @@
+struct lib = { struct rec = { struct Rec = { x: i32 } } }
+unfold lib.rec

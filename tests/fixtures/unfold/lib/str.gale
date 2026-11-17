@@ -1,0 +1,1 @@
+export func len(s: []u8) -> usize = 0

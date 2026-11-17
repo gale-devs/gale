@@ -1,0 +1,2 @@
+struct lib = { n: i32 }
+unfold lib.math
