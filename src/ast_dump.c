@@ -223,6 +223,20 @@ static void dump_expr(Buf *b, const Expr *e) {
         dump_expr(b, e->u.while_.body);
         put(b, ")");
         break;
+    case EXPR_STRUCT_LIT: {
+        size_t i;
+        put(b, "(lit ");
+        put_path(b, e->u.struct_lit.path);
+        for (i = 0; i < e->u.struct_lit.nfields; i++) {
+            put(b, " (");
+            put_str(b, e->u.struct_lit.fields[i]->name);
+            put(b, " ");
+            dump_expr(b, e->u.struct_lit.fields[i]->value);
+            put(b, ")");
+        }
+        put(b, ")");
+        break;
+    }
     case EXPR_CALL: {
         size_t i;
         put(b, "(call ");
