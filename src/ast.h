@@ -4,6 +4,10 @@
 #include <stddef.h>
 
 #include "lexer.h"
+#include "ty.h"
+
+/* Filled in by sema (see sema.h); NULL before type checking. */
+typedef struct Sym Sym;
 
 /* All AST nodes are allocated in an Arena. Strings point into the source buffer. */
 
@@ -36,6 +40,7 @@ typedef enum {
 struct Type {
     TypeKind kind;
     int line, col;
+    Ty *sem; /* resolved type (sema) */
     union {
         Path path;
         Type *elem; /* PTR, OPTIONAL, SLICE, ERRUNION */
@@ -78,6 +83,7 @@ typedef enum {
 typedef struct {
     StmtKind kind;
     int line, col;
+    Sym *sym;   /* LET, VAR: the local variable (sema) */
     Str name;   /* LET, VAR */
     Type *type; /* LET, VAR: optional */
     Expr *expr; /* LET, VAR, DEFER: required; RETURN: optional; EXPR: required */
@@ -98,6 +104,8 @@ typedef struct {
 struct Expr {
     ExprKind kind;
     int line, col;
+    Ty *ty;   /* type of the expression (sema) */
+    Sym *sym; /* what an IDENT, or a path of FIELDs, refers to (sema) */
     union {
         Str lit;      /* INT, FLOAT, STRING, IDENT */
         int boolean;  /* BOOL */
@@ -176,6 +184,7 @@ struct Item {
     ItemKind kind;
     int exported;
     int line, col;
+    Sym *sym; /* STRUCT, FUNC: what it declares (sema) */
     union {
         Path unfold;
         struct {
