@@ -308,7 +308,7 @@ static void push_file(Unfolder *u, const char *canon, const Site *site) {
     u->stack[u->nstack++] = canon;
 }
 
-/* Marks the structs along path[0..upto) in dst as exported. */
+/* Marks the first `upto` structs along path in dst as exported. */
 static void mark_exported(Body *dst, const Path *path, size_t upto) {
     Body *cur = dst;
     size_t i;
@@ -376,7 +376,7 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     for (i = 0; i < seen->len; i++) {
         if (strcmp(((const char **)seen->data)[i], key) == 0) {
             if (uf->exported) {
-                mark_exported(dst, path, k == path->count ? path->count : path->count - 1);
+                mark_exported(dst, path, 1);
             }
             return;
         }
@@ -391,9 +391,14 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     expand_body(u, &file->body, file_path);
     u->nstack--;
 
+    /* Only the outermost struct of the path is subject to the `export` of the unfold
+     * (it decides whether the includer re-exports the result). Every struct further
+     * in is just part of the path and is always exported, so that the includer can
+     * walk it. */
     if (k == path->count) {
         /* the whole file: a struct named after the last segment ... */
-        leaf = new_struct_item(u, path->segs[path->count - 1], uf->exported, uf->line, uf->col);
+        leaf = new_struct_item(u, path->segs[path->count - 1],
+                               path->count == 1 ? uf->exported : 1, uf->line, uf->col);
         leaf->u.struct_.body = file->body;
     } else {
         /* part of the file: walk down through structs to the named struct or func */
@@ -415,7 +420,7 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     }
     /* ... wrapped in one struct per remaining segment */
     for (i = path->count - 1; i > 0; i--) {
-        Item *w = new_struct_item(u, path->segs[i - 1], uf->exported, uf->line, uf->col);
+        Item *w = new_struct_item(u, path->segs[i - 1], i == 1 ? uf->exported : 1, uf->line, uf->col);
         append_item(u, &w->u.struct_.body, leaf);
         leaf = w;
     }
