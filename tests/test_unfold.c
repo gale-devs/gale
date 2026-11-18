@@ -13,8 +13,10 @@
 #define ALT "tests/fixtures/unfold_alt"
 
 #define MATH_BODY " (export func add ((a i32) (b i32)) i32 (+ a b)) (func hidden () void 0))"
-#define MATH_DUMP "(struct math" MATH_BODY
-#define MATH_EXPORTED "(export struct math" MATH_BODY
+/* Inner structs of an unfolded path are always exported; only the outermost one
+ * follows the `export` of the unfold. */
+#define MATH_DUMP "(export struct math" MATH_BODY
+#define MATH_EXPORTED MATH_DUMP
 
 static int failures = 0;
 
@@ -103,7 +105,7 @@ static void test_basic(void) {
 static void test_merge(void) {
     /* two unfolds under the same path land in one struct */
     check("merge",
-          "(struct lib " MATH_DUMP " (struct str (export func len ((s (slice u8))) usize 0)))");
+          "(struct lib " MATH_DUMP " (export struct str (export func len ((s (slice u8))) usize 0)))");
     /* merged into a struct the file already defines */
     check("userstruct", "(struct lib (n i32) " MATH_DUMP ")");
 }
@@ -118,13 +120,14 @@ static void test_repeat_and_export(void) {
 static void test_nested_files(void) {
     /* lib/net.gale unfolds lib.math itself: the result sits inside net */
     check("nested",
-          "(struct lib (struct net (export func ping () void (call (. (. lib math) add) 1 1)) "
+          "(struct lib (export struct net (export func ping () void (call (. (. lib math) add) 1 1)) "
           "(struct lib " MATH_DUMP ")))");
 }
 
 static void test_partial(void) {
-    check("partial", "(struct lib (struct math (export func add ((a i32) (b i32)) i32 (+ a b))))");
-    check("partial_deep", "(struct lib (struct deep (struct Inner (func f () void 1))))");
+    check("partial",
+          "(struct lib (export struct math (export func add ((a i32) (b i32)) i32 (+ a b))))");
+    check("partial_deep", "(struct lib (export struct deep (export struct Inner (func f () void 1))))");
 }
 
 static void test_roots(void) {
@@ -135,7 +138,7 @@ static void test_roots(void) {
     roots[1] = ALT;
     got = expand(FIX "/ex/roots.gale", roots, 2);
     if (strcmp(got, "(struct lib " MATH_DUMP ")\n"
-                    "(struct alt (struct util (export func helper () void 1)))") != 0) {
+                    "(struct alt (export struct util (export func helper () void 1)))") != 0) {
         fprintf(stderr, "roots: mismatch\n  got: %s\n", got);
         failures++;
     }
