@@ -15,6 +15,11 @@ struct Sema {
     StructInfo *root;
     SemaError *err;
     jmp_buf jb;
+
+    /* state while checking a function body */
+    const StructInfo *cur_scope; /* the struct that contains the function */
+    Ty *cur_ret;                 /* its return type */
+    Vec locals;                  /* Sym*: parameters and variables in scope, innermost last */
 };
 
 /* printf helper for a Str: "%.*s" with SF(str) */
@@ -40,6 +45,7 @@ Sema *sema_new(Arena *arena) {
     }
     s->arena = arena;
     ty_ctx_init(&s->tys, arena);
+    vec_init(&s->locals, sizeof(Sym *));
     return s;
 }
 
@@ -398,6 +404,352 @@ static void visit_all(Sema *s, StructInfo *si) {
     }
 }
 
+/* ---- locals ---- */
+
+static Sym *find_local(Sema *s, Str name) {
+    Sym **l = s->locals.data;
+    size_t i;
+
+    for (i = s->locals.len; i-- > 0;) {
+        if (str_eq(l[i]->name, name)) {
+            return l[i];
+        }
+    }
+    return NULL;
+}
+
+/* A local may not reuse the name of another local or parameter that is in scope. */
+static Sym *declare_local(Sema *s, Str name, Ty *ty, int is_mutable, int is_param, int line, int col) {
+    Sym *sy;
+
+    if (find_local(s, name)) {
+        fail(s, line, col, "'%.*s' is already declared", SF(name));
+    }
+    sy = arena_alloc(s->arena, sizeof(Sym));
+    sy->kind = SYM_LOCAL;
+    sy->name = name;
+    sy->ty = ty;
+    sy->is_mutable = is_mutable;
+    sy->is_param = is_param;
+    vec_push(s->arena, &s->locals, &sy);
+    return sy;
+}
+
+/* ---- expressions ---- */
+
+static Ty *check_expr(Sema *s, Expr *e, Ty *expected);
+
+static const char *op_str(TokenKind k) {
+    switch (k) {
+    case TOK_PLUS: return "+";
+    case TOK_MINUS: return "-";
+    case TOK_STAR: return "*";
+    case TOK_SLASH: return "/";
+    case TOK_PERCENT: return "%";
+    case TOK_AMP: return "&";
+    case TOK_PIPE: return "|";
+    case TOK_CARET: return "^";
+    case TOK_TILDE: return "~";
+    case TOK_BANG: return "!";
+    case TOK_ANDAND: return "&&";
+    case TOK_OROR: return "||";
+    case TOK_SHL: return "<<";
+    case TOK_SHR: return ">>";
+    case TOK_EQ: return "==";
+    case TOK_NE: return "!=";
+    case TOK_LT: return "<";
+    case TOK_LE: return "<=";
+    case TOK_GT: return ">";
+    case TOK_GE: return ">=";
+    default: return "?";
+    }
+}
+
+/* A number written in the source: its type is taken from the context. */
+static int is_literal(const Expr *e) {
+    if (e->kind == EXPR_INT || e->kind == EXPR_FLOAT) {
+        return 1;
+    }
+    return e->kind == EXPR_UNARY && e->u.unary.op == TOK_MINUS && is_literal(e->u.unary.operand);
+}
+
+static void check_int_range(Sema *s, const Expr *lit, const Ty *ty, int neg, unsigned long long mag) {
+    unsigned long long limit;
+
+    if (ty->is_signed) {
+        limit = 1ULL << (ty->bits - 1);
+        if (neg ? mag > limit : mag > limit - 1) {
+            fail(s, lit->line, lit->col, "the value does not fit in %s", ty_str(&s->tys, ty));
+        }
+    } else {
+        limit = ty->bits >= 64 ? ULLONG_MAX : (1ULL << ty->bits) - 1;
+        if ((neg && mag != 0) || mag > limit) {
+            fail(s, lit->line, lit->col, "the value does not fit in %s", ty_str(&s->tys, ty));
+        }
+    }
+}
+
+/* An integer literal takes the expected integer or float type, otherwise i32. */
+static Ty *check_int_literal(Sema *s, Expr *e, Ty *expected, int neg) {
+    unsigned long long mag;
+    Ty *ty;
+
+    if (!parse_int(e->u.lit, &mag)) {
+        fail(s, e->line, e->col, "the integer literal is too large");
+    }
+    ty = (expected && ty_is_numeric(expected)) ? expected : s->tys.i32;
+    if (ty_is_integer(ty)) {
+        check_int_range(s, e, ty, neg, mag);
+    }
+    e->ty = ty;
+    return ty;
+}
+
+/* Checks both operands of a binary operator. A literal operand takes its type from
+ * the other side, so `x + 1` works for any integer type of x. */
+static void check_operands(Sema *s, Expr *l, Expr *r, Ty *expected, Ty **lt, Ty **rt) {
+    if (is_literal(l) && !is_literal(r)) {
+        *rt = check_expr(s, r, expected);
+        *lt = check_expr(s, l, *rt);
+    } else {
+        *lt = check_expr(s, l, expected);
+        *rt = check_expr(s, r, *lt);
+    }
+}
+
+static Ty *check_binary(Sema *s, Expr *e, Ty *expected) {
+    TokenKind op = e->u.binary.op;
+    Expr *l = e->u.binary.lhs, *r = e->u.binary.rhs;
+    Ty *lt, *rt;
+
+    switch (op) {
+    case TOK_ANDAND:
+    case TOK_OROR:
+        lt = check_expr(s, l, s->tys.bool_);
+        rt = check_expr(s, r, s->tys.bool_);
+        if (lt != s->tys.bool_ || rt != s->tys.bool_) {
+            fail(s, e->line, e->col, "'%s' needs bool operands, found %s and %s", op_str(op),
+                 ty_str(&s->tys, lt), ty_str(&s->tys, rt));
+        }
+        return s->tys.bool_;
+
+    case TOK_EQ:
+    case TOK_NE:
+    case TOK_LT:
+    case TOK_LE:
+    case TOK_GT:
+    case TOK_GE:
+        check_operands(s, l, r, NULL, &lt, &rt);
+        if (lt != rt) {
+            fail(s, e->line, e->col, "cannot compare %s with %s", ty_str(&s->tys, lt),
+                 ty_str(&s->tys, rt));
+        }
+        if (op == TOK_EQ || op == TOK_NE) {
+            if (!ty_is_numeric(lt) && lt->kind != TY_BOOL && lt->kind != TY_PTR) {
+                fail(s, e->line, e->col, "'%s' does not work on %s", op_str(op), ty_str(&s->tys, lt));
+            }
+        } else if (!ty_is_numeric(lt)) {
+            fail(s, e->line, e->col, "'%s' does not work on %s", op_str(op), ty_str(&s->tys, lt));
+        }
+        return s->tys.bool_;
+
+    case TOK_SHL:
+    case TOK_SHR:
+        lt = check_expr(s, l, expected);
+        rt = check_expr(s, r, lt);
+        if (!ty_is_integer(lt) || !ty_is_integer(rt)) {
+            fail(s, e->line, e->col, "'%s' needs integer operands, found %s and %s", op_str(op),
+                 ty_str(&s->tys, lt), ty_str(&s->tys, rt));
+        }
+        return lt;
+
+    case TOK_AMP:
+    case TOK_PIPE:
+    case TOK_CARET:
+    case TOK_PERCENT:
+        check_operands(s, l, r, expected, &lt, &rt);
+        if (lt != rt) {
+            fail(s, e->line, e->col, "mismatched types for '%s': %s and %s", op_str(op),
+                 ty_str(&s->tys, lt), ty_str(&s->tys, rt));
+        }
+        if (!ty_is_integer(lt)) {
+            fail(s, e->line, e->col, "'%s' needs integer operands, found %s", op_str(op),
+                 ty_str(&s->tys, lt));
+        }
+        return lt;
+
+    default: /* + - * / */
+        check_operands(s, l, r, expected, &lt, &rt);
+        if (lt != rt) {
+            fail(s, e->line, e->col, "mismatched types for '%s': %s and %s", op_str(op),
+                 ty_str(&s->tys, lt), ty_str(&s->tys, rt));
+        }
+        if (!ty_is_numeric(lt)) {
+            fail(s, e->line, e->col, "'%s' needs numeric operands, found %s", op_str(op),
+                 ty_str(&s->tys, lt));
+        }
+        return lt;
+    }
+}
+
+static Ty *check_unary(Sema *s, Expr *e, Ty *expected) {
+    Expr *x = e->u.unary.operand;
+    Ty *t;
+
+    switch (e->u.unary.op) {
+    case TOK_MINUS:
+        if (x->kind == EXPR_INT) {
+            t = check_int_literal(s, x, expected, 1);
+            return t;
+        }
+        t = check_expr(s, x, expected);
+        if (!ty_is_numeric(t)) {
+            fail(s, e->line, e->col, "cannot negate %s", ty_str(&s->tys, t));
+        }
+        if (ty_is_integer(t) && !t->is_signed) {
+            fail(s, e->line, e->col, "cannot negate the unsigned type %s", ty_str(&s->tys, t));
+        }
+        return t;
+    case TOK_BANG:
+        t = check_expr(s, x, s->tys.bool_);
+        if (t != s->tys.bool_) {
+            fail(s, e->line, e->col, "'!' needs a bool, found %s", ty_str(&s->tys, t));
+        }
+        return t;
+    case TOK_TILDE:
+        t = check_expr(s, x, expected);
+        if (!ty_is_integer(t)) {
+            fail(s, e->line, e->col, "'~' needs an integer, found %s", ty_str(&s->tys, t));
+        }
+        return t;
+    default:
+        fail(s, e->line, e->col, "this operator is not supported yet");
+    }
+}
+
+/* Which conversions `as` allows. */
+static int castable(const Ty *from, const Ty *to) {
+    if (from == to) {
+        return 1;
+    }
+    if (ty_is_numeric(from) && ty_is_numeric(to)) {
+        return 1;
+    }
+    if (from->kind == TY_BOOL && ty_is_integer(to)) {
+        return 1;
+    }
+    if (from->kind == TY_PTR && to->kind == TY_PTR) {
+        return 1;
+    }
+    if ((from->kind == TY_PTR && ty_is_integer(to)) || (ty_is_integer(from) && to->kind == TY_PTR)) {
+        return 1;
+    }
+    return 0;
+}
+
+static Ty *check_cast(Sema *s, Expr *e) {
+    Ty *to = resolve_value_type(s, s->cur_scope, e->u.cast.type, "a cast target");
+    Ty *from = check_expr(s, e->u.cast.operand, NULL);
+
+    if (!castable(from, to)) {
+        fail(s, e->line, e->col, "cannot cast %s to %s", ty_str(&s->tys, from), ty_str(&s->tys, to));
+    }
+    return to;
+}
+
+static Ty *check_ident(Sema *s, Expr *e) {
+    Sym *sy = find_local(s, e->u.lit);
+
+    if (!sy) {
+        sy = lookup_lexical(s->cur_scope, e->u.lit);
+    }
+    if (!sy) {
+        fail(s, e->line, e->col, "unknown name '%.*s'", SF(e->u.lit));
+    }
+    e->sym = sy;
+    if (sy->kind == SYM_FUNC) {
+        fail(s, e->line, e->col, "'%.*s' is a function; call it with ()", SF(e->u.lit));
+    }
+    if (sy->kind == SYM_STRUCT) {
+        fail(s, e->line, e->col, "'%.*s' is a type, not a value", SF(e->u.lit));
+    }
+    return sy->ty;
+}
+
+/* Type of `e`; `expected` (may be NULL) is the type the context wants, used to type
+ * number literals. Sets e->ty. */
+static Ty *check_expr(Sema *s, Expr *e, Ty *expected) {
+    Ty *t;
+
+    switch (e->kind) {
+    case EXPR_INT:
+        t = check_int_literal(s, e, expected, 0);
+        break;
+    case EXPR_FLOAT:
+        t = (expected && ty_is_float(expected)) ? expected : s->tys.f64;
+        break;
+    case EXPR_STRING:
+        t = s->tys.str;
+        break;
+    case EXPR_BOOL:
+        t = s->tys.bool_;
+        break;
+    case EXPR_IDENT:
+        t = check_ident(s, e);
+        break;
+    case EXPR_UNARY:
+        t = check_unary(s, e, expected);
+        break;
+    case EXPR_BINARY:
+        t = check_binary(s, e, expected);
+        break;
+    case EXPR_CAST:
+        t = check_cast(s, e);
+        break;
+    default:
+        fail(s, e->line, e->col, "this kind of expression is not supported yet");
+    }
+    e->ty = t;
+    return t;
+}
+
+/* ---- function bodies ---- */
+
+static void check_func(Sema *s, const StructInfo *scope, Sym *sy) {
+    Item *it = sy->item;
+    Ty *ret = sy->ty->ret;
+    Ty *t;
+    size_t i;
+
+    s->cur_scope = scope;
+    s->cur_ret = ret;
+    s->locals.len = 0;
+    for (i = 0; i < it->u.func.nparams; i++) {
+        const Param *p = it->u.func.params[i];
+        declare_local(s, p->name, sy->ty->params[i], 0, 1, p->line, p->col);
+    }
+    t = check_expr(s, it->u.func.body, ret == s->tys.void_ ? NULL : ret);
+    /* a void function discards the value of its body */
+    if (ret != s->tys.void_ && !ty_assignable(t, ret)) {
+        fail(s, it->u.func.body->line, it->u.func.body->col,
+             "the body has type %s, but the function returns %s", ty_str(&s->tys, t),
+             ty_str(&s->tys, ret));
+    }
+}
+
+static void check_bodies(Sema *s, const StructInfo *si) {
+    size_t i;
+
+    for (i = 0; i < si->nmembers; i++) {
+        Sym *m = si->members[i];
+        if (m->kind == SYM_FUNC) {
+            check_func(s, si, m);
+        } else {
+            check_bodies(s, m->strukt);
+        }
+    }
+}
+
 /* ---- entry point ---- */
 
 int sema_check(Sema *s, File *file, SemaError *err) {
@@ -411,5 +763,6 @@ int sema_check(Sema *s, File *file, SemaError *err) {
     s->root = declare_body(s, &file->body, NULL, NULL);
     resolve_decls(s, s->root);
     visit_all(s, s->root);
+    check_bodies(s, s->root);
     return 1;
 }
