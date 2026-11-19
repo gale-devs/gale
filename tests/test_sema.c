@@ -205,6 +205,7 @@ static void test_casts(void) {
     "  export func plus(c: *Counter, k: i32) -> i32 = c.n + k\n"                      \
     "  export func bad(k: i32) -> i32 = k\n"                                          \
     "}\n"                                                                      \
+    "func nothing() = {}\n"                                                    \
     "struct lib = {\n"                                                         \
     "  export struct math = {\n"                                               \
     "    export func twice(a: i32) -> i32 = a + a\n"                           \
@@ -241,6 +242,32 @@ static void check_t_err(const char *sig, const char *expr, int col, const char *
     char src[1200];
     build_t(src, sizeof src, sig, expr);
     check_err(src, pre_lines() + 2, 2 + col, msg);
+}
+
+/* The error must be reported at the first occurrence of `needle` inside the test
+ * function, so tests name the offending token instead of counting columns. */
+static void check_t_err_at(const char *sig, const char *expr, const char *needle, const char *msg) {
+    char src[1600];
+    const char *t, *at, *c;
+    int line = 1, col = 1;
+
+    build_t(src, sizeof src, sig, expr);
+    t = strstr(src, "\nfunc t(");
+    at = t ? strstr(t + 1, needle) : NULL;
+    if (!at) {
+        fprintf(stderr, "test bug: `%s` not found in:\n%s\n", needle, src);
+        failures++;
+        return;
+    }
+    for (c = src; c < at; c++) {
+        if (*c == '\n') {
+            line++;
+            col = 1;
+        } else {
+            col++;
+        }
+    }
+    check_err(src, line, col, msg);
 }
 
 static void test_calls(void) {
@@ -333,6 +360,90 @@ static void test_index_and_pointers(void) {
     check_t_err("(x: i32) -> *i64", "&x", 1, "the body has type *i32, but the function returns *i64");
 }
 
+static void test_variables_and_scopes(void) {
+    check_t_ok("() -> i32", "{\n  let a = 1\n  let b = a + 2\n  b\n}");
+    check_t_ok("() -> i32", "{\n  var n = 0\n  n = n + 1\n  n\n}");
+    check_t_ok("() -> i32", "{\n  let a: u8 = 200\n  a as i32\n}");
+    check_t_ok("() -> i32", "{\n  let p = Point { x: 1, y: 2 }\n  p.x + p.y\n}");
+    check_t_ok("() -> i32", "{\n  let v = if true { 1 } else { 2 }\n  v\n}");
+    check_t_err_at("() -> i32", "{\n  let a: u8 = 300\n  0\n}", "300", "the value does not fit in u8");
+    check_t_err_at("() -> i32", "{\n  let a: i64 = add(1, 2)\n  0\n}", "add(1, 2)", "expected i64, found i32");
+    check_t_err_at("() -> i32", "{\n  let a = nothing()\n  0\n}", "nothing()", "no value to store");
+    check_t_err_at("() -> i32", "{\n  let a: void = nothing()\n  0\n}", "void", "a variable cannot have type void");
+    /* names cannot be reused while in scope */
+    check_t_err_at("() -> i32", "{\n  let a = 1\n  let a = 2\n  a\n}", "let a = 2", "'a' is already declared");
+    check_t_err_at("(x: i32) -> i32", "{\n  let x = 1\n  x\n}", "let x", "'x' is already declared");
+    check_t_err_at("() -> i32", "{\n  let a = 1\n  { let a = 2 }\n  a\n}", "let a = 2", "'a' is already declared");
+    /* a variable ends with its block */
+    check_t_err_at("() -> i32", "{\n  { let a = 1 }\n  a\n}", "a\n}", "unknown name 'a'");
+    check_t_ok("() -> i32", "{\n  { let a = 1 }\n  let a = 2\n  a\n}");
+    check_t_err_at("() -> i32", "{\n  let a = a\n  a\n}", "a\n  a", "unknown name 'a'");
+}
+
+static void test_assignment(void) {
+    check_t_ok("() -> i32", "{\n  var n = 1\n  n = 2\n  n\n}");
+    check_t_ok("(p: *Point) -> i32", "{\n  p.x = 5\n  p.x\n}");
+    check_t_ok("() -> i32", "{\n  var p = Point { x: 1, y: 2 }\n  p.x = 3\n  p.x\n}");
+    check_t_ok("(a: []u8) -> u8", "{\n  a[0] = 1\n  a[0]\n}");
+    check_t_ok("(p: *i32) -> i32", "{\n  *p = 3\n  *p\n}");
+    check_t_ok("() -> u8", "{\n  var b: u8 = 1\n  b = 255\n  b\n}");
+    check_t_err_at("() -> i32", "{\n  let n = 1\n  n = 2\n  n\n}", "n = 2",
+                   "cannot assign to 'n': it is declared with let (use var)");
+    check_t_err_at("(x: i32) -> i32", "{\n  x = 2\n  x\n}", "x = 2", "parameters are immutable");
+    check_t_err_at("(p: Point) -> i32", "{\n  p.x = 5\n  p.x\n}", "p.x = 5", "not mutable");
+    check_t_err_at("() -> i32", "{\n  let p = Point { x: 1, y: 2 }\n  p.x = 3\n  0\n}", "p.x = 3", "not mutable");
+    check_t_err_at("(a: [4]u8) -> u8", "{\n  a[0] = 1\n  0\n}", "a[0] = 1", "not mutable");
+    check_t_err_at("() -> i32", "{\n  1 = 2\n  0\n}", "1 = 2", "cannot assign to this expression");
+    check_t_err_at("() -> i32", "{\n  add(1, 2) = 3\n  0\n}", "add(1, 2) = 3", "cannot assign to this expression");
+    check_t_err_at("() -> i32", "{\n  var n = 1\n  n = true\n  n\n}", "true", "expected i32, found bool");
+    check_t_err_at("() -> u8", "{\n  var b: u8 = 1\n  b = 256\n  b\n}", "256", "the value does not fit in u8");
+    /* assignment is a statement-like expression of type void: no chaining */
+    check_t_err_at("() -> i32", "{\n  var n = 1\n  var m = 2\n  n = m = 1\n  n\n}", "m = 1", "expected i32, found void");
+}
+
+static void test_return(void) {
+    check_t_ok("() -> i32", "{ return 1 }");
+    check_t_ok("(x: i32) -> i32", "{\n  if x < 0 { return 0 }\n  x\n}");
+    check_t_ok("(x: i32) -> i32", "{\n  if x < 0 { return 0 } else { return 1 }\n}");
+    check_t_ok("() -> void", "{ return }");
+    check_t_ok("() -> i64", "{ return 1 }");
+    check_t_ok("() -> i32!", "{ return 1 }");
+    check_t_err_at("() -> i32", "{ return }", "return", "must return a value of type i32");
+    check_t_err_at("() -> void", "{ return 1 }", "return", "does not return a value");
+    check_t_err_at("() -> i32", "{ return true }", "true", "expected i32, found bool");
+    check_t_err_at("() -> u8", "{ return 300 }", "300", "the value does not fit in u8");
+    /* falling off the end of a function that returns a value */
+    check_t_err_at("(x: i32) -> i32", "{\n  if x < 0 { return 0 }\n}", "{\n  if", "the body has type void, but the function returns i32");
+    check_t_err_at("() -> i32", "{}", "{}", "the body has type void, but the function returns i32");
+}
+
+static void test_if_and_while(void) {
+    check_t_ok("(b: bool) -> i32", "if b { 1 } else { 2 }");
+    check_t_ok("(x: i32) -> i32", "if x < 0 { -1 } else if x == 0 { 0 } else { 1 }");
+    check_t_ok("(b: bool) -> u8", "if b { 1 } else { 255 }");
+    check_t_ok("(b: bool, v: u8) -> u8", "if b { v } else { 0 }");
+    check_t_ok("(b: bool) -> i32", "if b { return 1 } else { 2 }");
+    check_t_ok("(b: bool) -> void", "if b { nothing() }");
+    check_t_ok("(b: bool) -> i32!", "if b { 1 } else { 2 }");
+    check_t_err_at("(b: bool) -> i32", "if b { 1 }", "if", "the body has type void, but the function returns i32");
+    check_t_err_at("(b: bool) -> i32", "if b { 1 } else { true }", "{ true }", "if and else have different types: i32 and bool");
+    check_t_err_at("(x: i32) -> i32", "if x { 1 } else { 2 }", "x {", "expected bool, found i32");
+    check_t_err_at("(b: bool) -> u8", "if b { 1 } else { 256 }", "256", "the value does not fit in u8");
+    check_t_ok("() -> i32", "{\n  var i = 0\n  while i < 10 { i = i + 1 }\n  i\n}");
+    check_t_ok("() -> void", "while true { nothing() }");
+    check_t_err_at("() -> i32", "{\n  while 1 { }\n  0\n}", "1 {", "expected bool, found i32");
+    check_t_err_at("() -> i32", "while true { }", "while", "the body has type void, but the function returns i32");
+}
+
+static void test_defer_and_try(void) {
+    check_t_ok("() -> i32", "{\n  defer nothing()\n  1\n}");
+    check_t_ok("() -> i32", "{\n  add(1, 2)\n  3\n}"); /* a statement may discard a value */
+    check_t_ok("(e: i32!) -> i32!", "{\n  let v = try e\n  v + 1\n}");
+    check_t_ok("(e: i32!) -> i32!", "try e");
+    check_t_err_at("(e: i32!) -> i32", "try e", "try", "'try' can only be used in a function that returns an error union");
+    check_t_err_at("(x: i32) -> i32!", "try x", "try", "'try' needs an error union, found i32");
+}
+
 static void test_function_bodies(void) {
     check_ok("func f(a: i32) -> i32 = a + 1");
     check_ok("func f(a: u8) -> u8 = a + 255");
@@ -408,6 +519,11 @@ int main(void) {
     test_fields_and_literals();
     test_methods();
     test_index_and_pointers();
+    test_variables_and_scopes();
+    test_assignment();
+    test_return();
+    test_if_and_while();
+    test_defer_and_try();
     test_function_bodies();
     test_declarations();
     test_type_errors();
