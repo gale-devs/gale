@@ -32,6 +32,15 @@ jobs:
           name: gale-linux-x86_64
           path: build/gale
 
+  sanitizers:
+    name: Linux (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test with sanitizers
+        run: make CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" test
+
   windows:
     name: Windows (MinGW-w64 gcc)
     runs-on: windows-latest
