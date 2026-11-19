@@ -15,6 +15,7 @@ struct Sema {
     StructInfo *root;
     SemaError *err;
     jmp_buf jb;
+    const char *cur_file; /* file of the declaration being processed, for error messages */
 
     /* state while checking a function body */
     const StructInfo *cur_scope; /* the struct that contains the function */
@@ -29,6 +30,7 @@ struct Sema {
 
 static NORETURN void fail(Sema *s, int line, int col, const char *fmt, ...) {
     va_list ap;
+    snprintf(s->err->file, sizeof s->err->file, "%s", s->cur_file ? s->cur_file : "");
     va_start(ap, fmt);
     vsnprintf(s->err->msg, sizeof s->err->msg, fmt, ap);
     va_end(ap);
@@ -180,6 +182,7 @@ static StructInfo *declare_body(Sema *s, Body *body, StructInfo *parent, Item *i
     si->parent = parent;
     si->item = item;
     if (item) {
+        s->cur_file = item->file;
         si->name = item->u.struct_.name;
         si->ty = ty_new_struct(&s->tys, si->name.ptr, si->name.len, si);
     }
@@ -204,6 +207,7 @@ static StructInfo *declare_body(Sema *s, Body *body, StructInfo *parent, Item *i
         Sym *sy;
         Str name;
 
+        s->cur_file = it->file;
         if (it->kind == ITEM_UNFOLD) {
             fail(s, it->line, it->col, "'unfold' must be expanded before type checking");
         }
@@ -354,10 +358,12 @@ static void resolve_decls(Sema *s, StructInfo *si) {
     size_t i;
 
     for (i = 0; i < si->nfields; i++) {
+        s->cur_file = si->item->file;
         si->fields[i].ty = resolve_value_type(s, si, si->item->u.struct_.body.fields[i]->type, "a field");
     }
     for (i = 0; i < si->nmembers; i++) {
         Sym *m = si->members[i];
+        s->cur_file = m->item->file;
         if (m->kind == SYM_STRUCT) {
             resolve_decls(s, m->strukt);
         } else {
@@ -393,6 +399,7 @@ static void visit_struct(Sema *s, StructInfo *si) {
         return;
     }
     if (si->state == 1) {
+        s->cur_file = si->item->file;
         fail(s, si->item->line, si->item->col, "struct '%.*s' contains itself (use a pointer)",
              SF(si->name));
     }
@@ -1164,6 +1171,7 @@ static void check_func(Sema *s, const StructInfo *scope, Sym *sy) {
     Ty *t;
     size_t i;
 
+    s->cur_file = it->file;
     s->cur_scope = scope;
     s->cur_ret = ret;
     s->locals.len = 0;
@@ -1197,9 +1205,11 @@ static void check_bodies(Sema *s, const StructInfo *si) {
 
 int sema_check(Sema *s, File *file, SemaError *err) {
     s->err = err;
+    err->file[0] = '\0';
     err->msg[0] = '\0';
     err->line = 0;
     err->col = 0;
+    s->cur_file = NULL;
     if (setjmp(s->jb)) {
         return 0;
     }

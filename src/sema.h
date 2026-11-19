@@ -45,6 +45,7 @@ struct Sym {
 };
 
 typedef struct {
+    char file[512]; /* file the error is in ("" if unknown, e.g. the tree was not tagged) */
     char msg[300];
     int line, col;
 } SemaError;
