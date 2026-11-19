@@ -7,6 +7,7 @@
 #include "fsutil.h"
 #include "lexer.h"
 #include "parser.h"
+#include "sema.h"
 #include "unfold.h"
 
 #define GALE_VERSION "0.0.1"
@@ -68,8 +69,9 @@ static void usage(FILE *out);
 
 #define MAX_INCLUDES 32
 
-/* gale expand [-I dir]... <file>: parse the file and expand its `unfold`s. */
-static int cmd_expand(int argc, char **argv) {
+/* gale expand|check [-I dir]... <file>: parse the file and expand its `unfold`s, then
+ * either print the tree (expand) or type-check it (check). */
+static int cmd_expand(int argc, char **argv, int check) {
     const char *includes[MAX_INCLUDES];
     const char *roots[MAX_INCLUDES + 1];
     size_t nincludes = 0, nroots = 0, i;
@@ -123,6 +125,17 @@ static int cmd_expand(int argc, char **argv) {
         if (!unfold_expand(u, file, path, &uerr)) {
             fprintf(stderr, "%s:%d:%d: error: %s\n", uerr.file[0] ? uerr.file : path, uerr.line,
                     uerr.col, uerr.msg);
+        } else if (check) {
+            Sema *sm = sema_new(&arena);
+            SemaError serr;
+            if (sema_check(sm, file, &serr)) {
+                puts("ok");
+                rc = 0;
+            } else {
+                fprintf(stderr, "%s:%d:%d: error: %s\n", serr.file[0] ? serr.file : path, serr.line,
+                        serr.col, serr.msg);
+            }
+            sema_free(sm);
         } else {
             dump = ast_dump(file);
             puts(dump);
@@ -144,6 +157,8 @@ static void usage(FILE *out) {
             "  gale parse <file>  print the syntax tree\n"
             "  gale expand [-I dir]... <file>\n"
             "                     print the syntax tree with `unfold`s expanded\n"
+            "  gale check [-I dir]... <file>\n"
+            "                     expand `unfold`s and type-check\n"
             "  gale --version\n"
             "  gale --help\n");
 }
@@ -164,7 +179,10 @@ int main(int argc, char **argv) {
         return cmd_parse(argv[2]);
     }
     if (argc >= 3 && strcmp(argv[1], "expand") == 0) {
-        return cmd_expand(argc - 2, argv + 2);
+        return cmd_expand(argc - 2, argv + 2, 0);
+    }
+    if (argc >= 3 && strcmp(argv[1], "check") == 0) {
+        return cmd_expand(argc - 2, argv + 2, 1);
     }
     usage(stderr);
     return 2;
