@@ -40,10 +40,14 @@ test: $(GALE) $(TESTS)
 		echo "run $$t"; \
 		$$t || exit 1; \
 	done
-	@for f in examples/*.gale; do \
+	@for f in examples/*.gale examples/checked/*.gale; do \
 		echo "lex+parse $$f"; \
 		$(GALE) lex $$f > /dev/null || exit 1; \
 		$(GALE) parse $$f > /dev/null || exit 1; \
+	done
+	@for f in examples/checked/*.gale; do \
+		echo "check $$f"; \
+		$(GALE) check $$f > /dev/null || exit 1; \
 	done
 
 clean:
