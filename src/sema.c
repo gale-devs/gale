@@ -249,10 +249,35 @@ static Ty *resolve_value_type(Sema *s, const StructInfo *scope, Type *t, const c
     return ty;
 }
 
-static Ty *resolve_path_type(Sema *s, const StructInfo *scope, Type *t) {
-    const Path *p = &t->u.path;
+/* a.b.c as members: the first segment is looked up in the enclosing structs, the rest
+ * through struct members (which must be exported unless we are inside). Returns NULL
+ * if the first segment is not a member in scope. */
+static Sym *lookup_path(Sema *s, const StructInfo *scope, const Path *p, int line, int col) {
     Sym *sy = lookup_lexical(scope, p->segs[0]);
     size_t i;
+
+    if (!sy) {
+        return NULL;
+    }
+    for (i = 1; i < p->count; i++) {
+        Sym *m;
+        if (sy->kind != SYM_STRUCT) {
+            fail(s, line, col, "'%.*s' is not a struct, so it has no member '%.*s'", SF(sy->name),
+                 SF(p->segs[i]));
+        }
+        m = find_member(sy->strukt, p->segs[i]);
+        if (!m) {
+            fail(s, line, col, "'%.*s' has no member '%.*s'", SF(sy->name), SF(p->segs[i]));
+        }
+        check_visible(s, scope, sy->strukt, m, line, col);
+        sy = m;
+    }
+    return sy;
+}
+
+static Ty *resolve_path_type(Sema *s, const StructInfo *scope, Type *t) {
+    const Path *p = &t->u.path;
+    Sym *sy = lookup_path(s, scope, p, t->line, t->col);
 
     if (!sy) {
         Ty *b = p->count == 1 ? ty_builtin(&s->tys, p->segs[0].ptr, p->segs[0].len) : NULL;
@@ -260,19 +285,6 @@ static Ty *resolve_path_type(Sema *s, const StructInfo *scope, Type *t) {
             return b;
         }
         fail(s, t->line, t->col, "unknown type '%s'", path_str(s, p));
-    }
-    for (i = 1; i < p->count; i++) {
-        Sym *m;
-        if (sy->kind != SYM_STRUCT) {
-            fail(s, t->line, t->col, "'%.*s' is not a struct, so it has no member '%.*s'",
-                 SF(sy->name), SF(p->segs[i]));
-        }
-        m = find_member(sy->strukt, p->segs[i]);
-        if (!m) {
-            fail(s, t->line, t->col, "'%.*s' has no member '%.*s'", SF(sy->name), SF(p->segs[i]));
-        }
-        check_visible(s, scope, sy->strukt, m, t->line, t->col);
-        sy = m;
     }
     if (sy->kind != SYM_STRUCT) {
         fail(s, t->line, t->col, "'%s' is not a type", path_str(s, p));
@@ -592,6 +604,237 @@ static Ty *check_binary(Sema *s, Expr *e, Ty *expected) {
     }
 }
 
+static NORETURN void fail_mismatch(Sema *s, int line, int col, const Ty *want, const Ty *got) {
+    fail(s, line, col, "expected %s, found %s", ty_str(&s->tys, want), ty_str(&s->tys, got));
+}
+
+/* Can `e` (already checked) be assigned to or have its address taken? */
+static int is_lvalue(const Expr *e) {
+    switch (e->kind) {
+    case EXPR_IDENT:
+        return e->sym && e->sym->kind == SYM_LOCAL;
+    case EXPR_FIELD:
+        if (e->sym) {
+            return 0; /* a member of a struct, not a field of a value */
+        }
+        return e->u.field.base->ty->kind == TY_PTR || is_lvalue(e->u.field.base);
+    case EXPR_INDEX:
+        return e->u.index.base->ty->kind != TY_ARRAY || is_lvalue(e->u.index.base);
+    case EXPR_UNARY:
+        return e->u.unary.op == TOK_STAR;
+    default:
+        return 0;
+    }
+}
+
+/* If `e` is a name or a.b.c that refers to a member (not to a local variable or a
+ * field of a value), returns it; otherwise NULL. */
+static Sym *try_resolve_path(Sema *s, Expr *e) {
+    if (e->kind == EXPR_IDENT) {
+        Sym *sy;
+        if (find_local(s, e->u.lit)) {
+            return NULL;
+        }
+        sy = lookup_lexical(s->cur_scope, e->u.lit);
+        if (!sy) {
+            fail(s, e->line, e->col, "unknown name '%.*s'", SF(e->u.lit));
+        }
+        e->sym = sy;
+        return sy;
+    }
+    if (e->kind == EXPR_FIELD) {
+        Sym *b = try_resolve_path(s, e->u.field.base);
+        Sym *m;
+
+        if (!b) {
+            return NULL;
+        }
+        if (b->kind != SYM_STRUCT) {
+            fail(s, e->line, e->col, "'%.*s' is a function and has no members", SF(b->name));
+        }
+        m = find_member(b->strukt, e->u.field.name);
+        if (!m) {
+            fail(s, e->line, e->col, "'%.*s' has no member '%.*s'", SF(b->name), SF(e->u.field.name));
+        }
+        check_visible(s, s->cur_scope, b->strukt, m, e->line, e->col);
+        e->sym = m;
+        return m;
+    }
+    return NULL;
+}
+
+/* `a.b` where a is a value (a struct or a pointer to one) or a path to a member. */
+static Ty *check_field(Sema *s, Expr *e) {
+    Sym *sy = try_resolve_path(s, e);
+    Ty *bt, *st;
+    const StructInfo *si;
+    size_t i;
+
+    if (sy) {
+        if (sy->kind == SYM_STRUCT) {
+            fail(s, e->line, e->col, "'%.*s' is a type, not a value", SF(sy->name));
+        }
+        fail(s, e->line, e->col, "'%.*s' is a function; call it with ()", SF(sy->name));
+    }
+    bt = check_expr(s, e->u.field.base, NULL);
+    st = bt->kind == TY_PTR ? bt->elem : bt;
+    if (st->kind != TY_STRUCT) {
+        fail(s, e->line, e->col, "%s has no fields", ty_str(&s->tys, bt));
+    }
+    si = st->strukt;
+    for (i = 0; i < si->nfields; i++) {
+        if (str_eq(si->fields[i].name, e->u.field.name)) {
+            return si->fields[i].ty;
+        }
+    }
+    if (find_member(si, e->u.field.name)) {
+        fail(s, e->line, e->col, "'%.*s' is not a field; call it with ()", SF(e->u.field.name));
+    }
+    fail(s, e->line, e->col, "%s has no field '%.*s'", ty_str(&s->tys, st), SF(e->u.field.name));
+}
+
+/* recv.f(args): f is a function of the receiver's struct whose first parameter takes
+ * the receiver (S or *S). Records how the receiver is passed. */
+static Sym *resolve_method(Sema *s, Expr *call) {
+    Expr *callee = call->u.call.callee;
+    Expr *base = callee->u.field.base;
+    Ty *bt = check_expr(s, base, NULL);
+    Ty *st = bt->kind == TY_PTR ? bt->elem : bt;
+    Sym *m;
+    Ty *p0;
+
+    if (st->kind != TY_STRUCT) {
+        fail(s, callee->line, callee->col, "%s has no methods", ty_str(&s->tys, bt));
+    }
+    m = find_member(st->strukt, callee->u.field.name);
+    if (!m || m->kind != SYM_FUNC) {
+        fail(s, callee->line, callee->col, "%s has no method '%.*s'", ty_str(&s->tys, st),
+             SF(callee->u.field.name));
+    }
+    check_visible(s, s->cur_scope, st->strukt, m, callee->line, callee->col);
+    if (m->ty->nparams == 0) {
+        fail(s, callee->line, callee->col, "'%.*s' takes no receiver (no parameters)", SF(m->name));
+    }
+    p0 = m->ty->params[0];
+    if (p0 == bt) {
+        call->u.call.recv_adjust = 0;
+    } else if (p0->kind == TY_PTR && p0->elem == st && bt == st) {
+        if (!is_lvalue(base)) {
+            fail(s, base->line, base->col, "cannot take the address of this receiver");
+        }
+        call->u.call.recv_adjust = 1;
+    } else if (p0 == st && bt->kind == TY_PTR) {
+        call->u.call.recv_adjust = 2;
+    } else {
+        fail(s, callee->line, callee->col,
+             "the first parameter of '%.*s' is %s, which does not take a receiver of type %s",
+             SF(m->name), ty_str(&s->tys, p0), ty_str(&s->tys, bt));
+    }
+    call->u.call.is_method = 1;
+    return m;
+}
+
+static Ty *check_call(Sema *s, Expr *e) {
+    Expr *callee = e->u.call.callee;
+    Sym *fn = NULL;
+    Ty *ft;
+    size_t first = 0, expect, i;
+
+    if (callee->kind == EXPR_IDENT || callee->kind == EXPR_FIELD) {
+        Sym *sy = try_resolve_path(s, callee);
+        if (sy) {
+            if (sy->kind != SYM_FUNC) {
+                fail(s, callee->line, callee->col, "'%.*s' is a type, not a function", SF(sy->name));
+            }
+            fn = sy;
+        } else if (callee->kind == EXPR_FIELD) {
+            fn = resolve_method(s, e);
+            first = 1;
+        } else {
+            fail(s, callee->line, callee->col, "'%.*s' is a variable, not a function",
+                 SF(callee->u.lit));
+        }
+    } else {
+        fail(s, callee->line, callee->col, "this expression is not a function");
+    }
+
+    ft = fn->ty;
+    callee->sym = fn;
+    callee->ty = ft;
+    expect = ft->nparams - first;
+    if (e->u.call.nargs != expect) {
+        fail(s, e->line, e->col, "'%.*s' takes %lu argument%s, found %lu", SF(fn->name),
+             (unsigned long)expect, expect == 1 ? "" : "s", (unsigned long)e->u.call.nargs);
+    }
+    for (i = 0; i < e->u.call.nargs; i++) {
+        Expr *a = e->u.call.args[i];
+        Ty *pt = ft->params[i + first];
+        Ty *at = check_expr(s, a, pt);
+        if (!ty_assignable(at, pt)) {
+            fail(s, a->line, a->col, "argument %lu of '%.*s': expected %s, found %s",
+                 (unsigned long)(i + 1), SF(fn->name), ty_str(&s->tys, pt), ty_str(&s->tys, at));
+        }
+    }
+    e->sym = fn;
+    return ft->ret;
+}
+
+static Ty *check_index(Sema *s, Expr *e) {
+    Ty *bt = check_expr(s, e->u.index.base, NULL);
+    Ty *it = check_expr(s, e->u.index.index, s->tys.usize);
+
+    if (!ty_is_integer(it)) {
+        fail(s, e->u.index.index->line, e->u.index.index->col, "an index must be an integer, found %s",
+             ty_str(&s->tys, it));
+    }
+    if (bt->kind != TY_ARRAY && bt->kind != TY_SLICE && bt->kind != TY_PTR) {
+        fail(s, e->line, e->col, "cannot index %s", ty_str(&s->tys, bt));
+    }
+    return bt->elem;
+}
+
+static Ty *check_struct_lit(Sema *s, Expr *e) {
+    const Path *path = &e->u.struct_lit.path;
+    Sym *sy = lookup_path(s, s->cur_scope, path, e->line, e->col);
+    const StructInfo *si;
+    unsigned char *given;
+    size_t i, j;
+
+    if (!sy) {
+        fail(s, e->line, e->col, "unknown type '%s'", path_str(s, path));
+    }
+    if (sy->kind != SYM_STRUCT) {
+        fail(s, e->line, e->col, "'%s' is not a type", path_str(s, path));
+    }
+    si = sy->strukt;
+    given = arena_alloc(s->arena, si->nfields + 1);
+    for (i = 0; i < e->u.struct_lit.nfields; i++) {
+        FieldInit *fi = e->u.struct_lit.fields[i];
+        Ty *vt;
+
+        for (j = 0; j < si->nfields && !str_eq(si->fields[j].name, fi->name); j++) {
+        }
+        if (j == si->nfields) {
+            fail(s, fi->line, fi->col, "%.*s has no field '%.*s'", SF(si->name), SF(fi->name));
+        }
+        if (given[j]) {
+            fail(s, fi->line, fi->col, "field '%.*s' is given twice", SF(fi->name));
+        }
+        given[j] = 1;
+        vt = check_expr(s, fi->value, si->fields[j].ty);
+        if (!ty_assignable(vt, si->fields[j].ty)) {
+            fail_mismatch(s, fi->value->line, fi->value->col, si->fields[j].ty, vt);
+        }
+    }
+    for (j = 0; j < si->nfields; j++) {
+        if (!given[j]) {
+            fail(s, e->line, e->col, "missing field '%.*s'", SF(si->fields[j].name));
+        }
+    }
+    e->sym = sy;
+    return sy->ty;
+}
+
 static Ty *check_unary(Sema *s, Expr *e, Ty *expected) {
     Expr *x = e->u.unary.operand;
     Ty *t;
@@ -622,6 +865,18 @@ static Ty *check_unary(Sema *s, Expr *e, Ty *expected) {
             fail(s, e->line, e->col, "'~' needs an integer, found %s", ty_str(&s->tys, t));
         }
         return t;
+    case TOK_STAR:
+        t = check_expr(s, x, NULL);
+        if (t->kind != TY_PTR) {
+            fail(s, e->line, e->col, "cannot dereference %s", ty_str(&s->tys, t));
+        }
+        return t->elem;
+    case TOK_AMP:
+        t = check_expr(s, x, expected && expected->kind == TY_PTR ? expected->elem : NULL);
+        if (!is_lvalue(x)) {
+            fail(s, e->line, e->col, "cannot take the address of this expression");
+        }
+        return ty_ptr(&s->tys, t);
     default:
         fail(s, e->line, e->col, "this operator is not supported yet");
     }
@@ -705,6 +960,18 @@ static Ty *check_expr(Sema *s, Expr *e, Ty *expected) {
         break;
     case EXPR_CAST:
         t = check_cast(s, e);
+        break;
+    case EXPR_FIELD:
+        t = check_field(s, e);
+        break;
+    case EXPR_CALL:
+        t = check_call(s, e);
+        break;
+    case EXPR_INDEX:
+        t = check_index(s, e);
+        break;
+    case EXPR_STRUCT_LIT:
+        t = check_struct_lit(s, e);
         break;
     default:
         fail(s, e->line, e->col, "this kind of expression is not supported yet");
