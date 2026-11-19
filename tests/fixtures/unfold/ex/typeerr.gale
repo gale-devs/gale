@@ -1,0 +1,2 @@
+unfold lib.typebad
+func main() -> i32 = lib.typebad.f()

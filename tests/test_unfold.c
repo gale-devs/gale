@@ -6,6 +6,7 @@
 #include "ast.h"
 #include "fsutil.h"
 #include "parser.h"
+#include "sema.h"
 #include "unfold.h"
 
 /* Run from the repository root (make test does). */
@@ -175,6 +176,75 @@ static void test_errors(void) {
     check_error("badfile", "lib/bad.gale:1:6: expected a function name");
 }
 
+/* Expands and type-checks `entry`. Returns "OK" or "ERROR file:line:col: message". */
+static char *expand_and_check(const char *entry, const char *const *roots, size_t nroots) {
+    Arena a;
+    ParseError pe;
+    UnfoldError ue;
+    SemaError se;
+    File *f;
+    Unfolder *u;
+    Sema *s;
+    char *src = read_file(entry);
+    char *out;
+    char buf[1200];
+
+    if (!src) {
+        return copy("ERROR cannot read file");
+    }
+    arena_init(&a);
+    f = parse_file(src, &a, &pe);
+    if (!f) {
+        out = copy("ERROR parse");
+    } else {
+        u = unfold_new(&a, roots, nroots);
+        if (!unfold_expand(u, f, entry, &ue)) {
+            snprintf(buf, sizeof buf, "ERROR unfold: %s", ue.msg);
+            out = copy(buf);
+        } else {
+            s = sema_new(&a);
+            if (sema_check(s, f, &se)) {
+                out = copy("OK");
+            } else {
+                snprintf(buf, sizeof buf, "ERROR %s:%d:%d: %s", se.file, se.line, se.col, se.msg);
+                out = copy(buf);
+            }
+            sema_free(s);
+        }
+        unfold_free(u);
+    }
+    arena_free(&a);
+    free(src);
+    return out;
+}
+
+static void check_sema(const char *name, const char *needle) {
+    char path[200];
+    const char *roots[1];
+    char *got;
+
+    snprintf(path, sizeof path, FIX "/ex/%s.gale", name);
+    roots[0] = FIX;
+    got = expand_and_check(path, roots, 1);
+    if (!strstr(got, needle)) {
+        fprintf(stderr, "%s (sema): expected \"%s\", got:\n  %s\n", name, needle, got);
+        failures++;
+    }
+    free(got);
+}
+
+static void test_type_checking_unfolded_code(void) {
+    /* unfolded code type-checks together with the file that uses it */
+    check_sema("basic", "OK");
+    check_sema("usage", "OK");
+    /* an exported function is callable, a private one is not */
+    check_sema("private", "ex/private.gale:2:");
+    check_sema("private", "'hidden' is private to 'math'");
+    /* an error in unfolded code is reported against the file it is in */
+    check_sema("typeerr", "ERROR tests/fixtures/unfold/lib/typebad.gale:1:26: the body has type bool");
+    check_sema("typeerr_entry", "ERROR tests/fixtures/unfold/ex/typeerr_entry.gale:1:22: the body has type bool");
+}
+
 static void test_cycles(void) {
     check_error("cycle", "circular unfold");
     check_error("cycle", "a.gale -> ");
@@ -189,6 +259,7 @@ int main(void) {
     test_partial();
     test_roots();
     test_errors();
+    test_type_checking_unfolded_code();
     test_cycles();
 
     if (failures) {

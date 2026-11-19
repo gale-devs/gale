@@ -1,0 +1,1 @@
+export func f() -> i32 = true

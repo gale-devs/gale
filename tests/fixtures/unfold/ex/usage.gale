@@ -1,0 +1,3 @@
+unfold lib.math
+unfold lib.str
+func main() -> i32 = lib.math.add(1, 2)
