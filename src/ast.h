@@ -187,6 +187,7 @@ struct Item {
     int exported;
     int line, col;
     Sym *sym; /* STRUCT, FUNC: what it declares (sema) */
+    const char *file; /* source file it was written in (set by unfold_expand), or NULL */
     union {
         Path unfold;
         struct {
