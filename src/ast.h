@@ -121,6 +121,8 @@ struct Expr {
             Expr *callee;
             Expr **args;
             size_t nargs;
+            int is_method;   /* sema: `recv.f(args)`, the receiver is the first argument */
+            int recv_adjust; /* sema: 0 as is, 1 take its address, 2 dereference it */
         } call;
         struct {
             Expr *base;
