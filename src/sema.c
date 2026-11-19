@@ -877,6 +877,15 @@ static Ty *check_unary(Sema *s, Expr *e, Ty *expected) {
             fail(s, e->line, e->col, "cannot take the address of this expression");
         }
         return ty_ptr(&s->tys, t);
+    case TOK_KW_TRY:
+        if (s->cur_ret->kind != TY_ERRUNION) {
+            fail(s, e->line, e->col, "'try' can only be used in a function that returns an error union");
+        }
+        t = check_expr(s, x, NULL);
+        if (t->kind != TY_ERRUNION) {
+            fail(s, e->line, e->col, "'try' needs an error union, found %s", ty_str(&s->tys, t));
+        }
+        return t->elem;
     default:
         fail(s, e->line, e->col, "this operator is not supported yet");
     }
@@ -931,6 +940,161 @@ static Ty *check_ident(Sema *s, Expr *e) {
     return sy->ty;
 }
 
+/* Can the place `e` (already checked, and an lvalue) be written to? Variables must be
+ * declared with `var`; through a pointer or a slice anything can be written. */
+static int is_mutable(const Expr *e) {
+    switch (e->kind) {
+    case EXPR_IDENT:
+        return e->sym && e->sym->kind == SYM_LOCAL && e->sym->is_mutable;
+    case EXPR_FIELD:
+        return e->u.field.base->ty->kind == TY_PTR || is_mutable(e->u.field.base);
+    case EXPR_INDEX:
+        return e->u.index.base->ty->kind != TY_ARRAY || is_mutable(e->u.index.base);
+    case EXPR_UNARY:
+        return e->u.unary.op == TOK_STAR;
+    default:
+        return 0;
+    }
+}
+
+static Ty *check_assign(Sema *s, Expr *e) {
+    Expr *l = e->u.binary.lhs, *r = e->u.binary.rhs;
+    Ty *lt = check_expr(s, l, NULL);
+    Ty *rt;
+
+    if (!is_lvalue(l)) {
+        fail(s, l->line, l->col, "cannot assign to this expression");
+    }
+    if (!is_mutable(l)) {
+        if (l->kind == EXPR_IDENT) {
+            fail(s, l->line, l->col, "cannot assign to '%.*s': %s", SF(l->u.lit),
+                 l->sym->is_param ? "parameters are immutable" : "it is declared with let (use var)");
+        }
+        fail(s, l->line, l->col, "cannot assign to this value: it is not mutable");
+    }
+    rt = check_expr(s, r, lt);
+    if (!ty_assignable(rt, lt)) {
+        fail_mismatch(s, r->line, r->col, lt, rt);
+    }
+    return s->tys.void_;
+}
+
+/* The common type of the two branches of an if/else. A branch that never finishes
+ * (it returns) takes the type of the other one. */
+static Ty *unify_branches(Sema *s, Expr *else_expr, Ty *a, Ty *b) {
+    if (a == s->tys.never) {
+        return b;
+    }
+    if (b == s->tys.never || ty_assignable(b, a)) {
+        return a;
+    }
+    if (ty_assignable(a, b)) {
+        return b;
+    }
+    fail(s, else_expr->line, else_expr->col, "if and else have different types: %s and %s",
+         ty_str(&s->tys, a), ty_str(&s->tys, b));
+}
+
+static void check_condition(Sema *s, Expr *cond) {
+    Ty *t = check_expr(s, cond, s->tys.bool_);
+    if (t != s->tys.bool_) {
+        fail_mismatch(s, cond->line, cond->col, s->tys.bool_, t);
+    }
+}
+
+static Ty *check_if(Sema *s, Expr *e, Ty *expected) {
+    Ty *then_ty, *else_ty;
+
+    check_condition(s, e->u.if_.cond);
+    then_ty = check_expr(s, e->u.if_.then_block, expected);
+    if (!e->u.if_.else_expr) {
+        return s->tys.void_; /* without else the value of the branch is discarded */
+    }
+    else_ty = check_expr(s, e->u.if_.else_expr,
+                         expected ? expected : (then_ty == s->tys.never ? NULL : then_ty));
+    return unify_branches(s, e->u.if_.else_expr, then_ty, else_ty);
+}
+
+static Ty *check_while(Sema *s, Expr *e) {
+    check_condition(s, e->u.while_.cond);
+    check_expr(s, e->u.while_.body, NULL);
+    return s->tys.void_;
+}
+
+static void check_return(Sema *s, Stmt *st) {
+    Ty *ret = s->cur_ret;
+
+    if (st->expr) {
+        Ty *t;
+        if (ret == s->tys.void_) {
+            fail(s, st->line, st->col, "this function does not return a value");
+        }
+        t = check_expr(s, st->expr, ret);
+        if (!ty_assignable(t, ret)) {
+            fail_mismatch(s, st->expr->line, st->expr->col, ret, t);
+        }
+    } else if (ret != s->tys.void_) {
+        fail(s, st->line, st->col, "this function must return a value of type %s",
+             ty_str(&s->tys, ret));
+    }
+}
+
+static void check_decl(Sema *s, Stmt *st) {
+    Ty *ty, *t;
+
+    if (st->type) {
+        ty = resolve_value_type(s, s->cur_scope, st->type, "a variable");
+        t = check_expr(s, st->expr, ty);
+        if (!ty_assignable(t, ty)) {
+            fail_mismatch(s, st->expr->line, st->expr->col, ty, t);
+        }
+    } else {
+        ty = check_expr(s, st->expr, NULL);
+        if (ty == s->tys.void_ || ty == s->tys.never) {
+            fail(s, st->expr->line, st->expr->col, "this expression has no value to store in a variable");
+        }
+    }
+    /* declared after the initializer, so `let x = x` does not see itself */
+    st->sym = declare_local(s, st->name, ty, st->kind == STMT_VAR, 0, st->line, st->col);
+}
+
+/* { stmts [tail] }. Variables declared inside end with the block. A block without a
+ * tail is void, or `never` if its last statement is a return. */
+static Ty *check_block(Sema *s, Expr *e, Ty *expected) {
+    Block *b = e->u.block;
+    size_t mark = s->locals.len, i;
+    Ty *result;
+
+    for (i = 0; i < b->nstmts; i++) {
+        Stmt *st = b->stmts[i];
+
+        switch (st->kind) {
+        case STMT_LET:
+        case STMT_VAR:
+            check_decl(s, st);
+            break;
+        case STMT_DEFER:
+            check_expr(s, st->expr, NULL);
+            break;
+        case STMT_RETURN:
+            check_return(s, st);
+            break;
+        case STMT_EXPR:
+            check_expr(s, st->expr, NULL);
+            break;
+        }
+    }
+    if (b->tail) {
+        result = check_expr(s, b->tail, expected);
+    } else if (b->nstmts && b->stmts[b->nstmts - 1]->kind == STMT_RETURN) {
+        result = s->tys.never;
+    } else {
+        result = s->tys.void_;
+    }
+    s->locals.len = mark;
+    return result;
+}
+
 /* Type of `e`; `expected` (may be NULL) is the type the context wants, used to type
  * number literals. Sets e->ty. */
 static Ty *check_expr(Sema *s, Expr *e, Ty *expected) {
@@ -972,6 +1136,18 @@ static Ty *check_expr(Sema *s, Expr *e, Ty *expected) {
         break;
     case EXPR_STRUCT_LIT:
         t = check_struct_lit(s, e);
+        break;
+    case EXPR_ASSIGN:
+        t = check_assign(s, e);
+        break;
+    case EXPR_BLOCK:
+        t = check_block(s, e, expected);
+        break;
+    case EXPR_IF:
+        t = check_if(s, e, expected);
+        break;
+    case EXPR_WHILE:
+        t = check_while(s, e);
         break;
     default:
         fail(s, e->line, e->col, "this kind of expression is not supported yet");
