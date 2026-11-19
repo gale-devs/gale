@@ -1,0 +1,12 @@
+// Variables, assignment and loops.
+func sum_to(n: i32) -> i32 = {
+    var i = 0
+    var total = 0
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+
+export func main() -> i32 = sum_to(100)

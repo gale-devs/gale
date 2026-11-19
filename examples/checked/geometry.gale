@@ -1,0 +1,22 @@
+// Structs, nested structs, struct literals and methods
+// (a function whose first parameter is the struct, or a pointer to it).
+struct Point = { x: i32, y: i32 }
+
+struct Rect = {
+    origin: Point
+    w: i32
+    h: i32
+
+    export func area(r: Rect) -> i32 = r.w * r.h
+
+    export func move_by(r: *Rect, dx: i32, dy: i32) = {
+        r.origin.x = r.origin.x + dx
+        r.origin.y = r.origin.y + dy
+    }
+}
+
+export func main() -> i32 = {
+    var r = Rect { origin: Point { x: 0, y: 0 }, w: 3, h: 4 }
+    r.move_by(1, 2)
+    r.area()
+}

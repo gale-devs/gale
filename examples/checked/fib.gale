@@ -1,0 +1,7 @@
+// Recursion, early return and arithmetic.
+func fib(n: i32) -> i32 = {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+export func main() -> i32 = fib(10)
