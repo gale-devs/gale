@@ -251,6 +251,19 @@ static void merge_item(Unfolder *u, Body *dst, Item *it, const char *trail, cons
          trail_join(u, trail, name), kind_name(ex), kind_name(it));
 }
 
+/* Records on every item (and nested item) of a freshly parsed file where it came from,
+ * so that later errors can name the right file after the trees are merged. */
+static void tag_files(Body *body, const char *file) {
+    size_t i;
+    for (i = 0; i < body->nitems; i++) {
+        Item *it = body->items[i];
+        it->file = file;
+        if (it->kind == ITEM_STRUCT) {
+            tag_files(&it->u.struct_.body, file);
+        }
+    }
+}
+
 /* ---- finding and expanding ---- */
 
 /* <root>/seg0/seg1/.../seg(k-1).gale  (malloc'ed, owned) */
@@ -388,6 +401,7 @@ static void process_unfold(Unfolder *u, Body *dst, const Item *uf, const char *c
     if (!file) {
         fail(u, file_path, perr.line, perr.col, "%s", perr.msg);
     }
+    tag_files(&file->body, file_path);
     expand_body(u, &file->body, file_path);
     u->nstack--;
 
@@ -470,6 +484,7 @@ int unfold_expand(Unfolder *u, File *file, const char *entry_path, UnfoldError *
         return 0;
     }
     u->stack[u->nstack++] = canonical_of(u, entry_path);
+    tag_files(&file->body, entry_path);
     expand_body(u, &file->body, entry_path);
     return 1;
 }
