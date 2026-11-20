@@ -160,6 +160,7 @@ typedef struct {
     Str name;
     int line, col;
     Type *type;
+    Sym *sym; /* the parameter as a local variable (sema) */
 } Param;
 
 typedef struct {

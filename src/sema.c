@@ -89,7 +89,7 @@ static const char *path_str(Sema *s, const Path *p) {
 
 /* Value of an integer literal (decimal, 0x, 0b, with '_' separators). Returns 0 if
  * it does not fit in 64 bits. */
-static int parse_int(Str t, unsigned long long *out) {
+int parse_int_literal(Str t, unsigned long long *out) {
     unsigned long long v = 0;
     unsigned base = 10;
     size_t i = 0;
@@ -321,7 +321,7 @@ static Ty *resolve_type(Sema *s, const StructInfo *scope, Type *t) {
         if (len->kind != EXPR_INT) {
             fail(s, len->line, len->col, "an array length must be an integer literal");
         }
-        if (!parse_int(len->u.lit, &n) || n > (unsigned long long)(~(size_t)0 >> 1)) {
+        if (!parse_int_literal(len->u.lit, &n) || n > (unsigned long long)(~(size_t)0 >> 1)) {
             fail(s, len->line, len->col, "array length is too large");
         }
         ty = ty_array(&s->tys, resolve_value_type(s, scope, t->u.array.elem, "an array element"),
@@ -513,7 +513,7 @@ static Ty *check_int_literal(Sema *s, Expr *e, Ty *expected, int neg) {
     unsigned long long mag;
     Ty *ty;
 
-    if (!parse_int(e->u.lit, &mag)) {
+    if (!parse_int_literal(e->u.lit, &mag)) {
         fail(s, e->line, e->col, "the integer literal is too large");
     }
     ty = (expected && ty_is_numeric(expected)) ? expected : s->tys.i32;
@@ -1176,8 +1176,8 @@ static void check_func(Sema *s, const StructInfo *scope, Sym *sy) {
     s->cur_ret = ret;
     s->locals.len = 0;
     for (i = 0; i < it->u.func.nparams; i++) {
-        const Param *p = it->u.func.params[i];
-        declare_local(s, p->name, sy->ty->params[i], 0, 1, p->line, p->col);
+        Param *p = it->u.func.params[i];
+        p->sym = declare_local(s, p->name, sy->ty->params[i], 0, 1, p->line, p->col);
     }
     t = check_expr(s, it->u.func.body, ret == s->tys.void_ ? NULL : ret);
     /* a void function discards the value of its body */

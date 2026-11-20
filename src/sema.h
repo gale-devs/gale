@@ -31,6 +31,11 @@ struct StructInfo {
     Sym **members;      /* the structs and funcs declared in the body, in source order */
     size_t nmembers;
     int state;          /* 0 = not visited, 1 = visiting, 2 = done (recursion check) */
+
+    /* layout, filled in lazily by ty_layout() */
+    int laid_out;
+    size_t size, align;
+    size_t *offsets;    /* offset of each field */
 };
 
 struct Sym {
@@ -42,6 +47,11 @@ struct Sym {
     Ty *ty;             /* STRUCT: its type, FUNC: its function type, LOCAL: its type */
     int is_mutable;     /* LOCAL: declared with `var` */
     int is_param;       /* LOCAL */
+
+    /* used by the code generator */
+    long frame_off;     /* LOCAL: offset from rbp */
+    int label;          /* FUNC: its assembly label (valid if has_label) */
+    int has_label;
 };
 
 typedef struct {
@@ -57,6 +67,10 @@ Sema *sema_new(Arena *arena);
 /* Checks the whole file. Returns 1 on success; on failure returns 0 and fills *err
  * (the first error only). */
 int sema_check(Sema *s, File *file, SemaError *err);
+
+/* Value of an integer literal's text (decimal, 0x, 0b, with '_'). Returns 0 if it
+ * does not fit in 64 bits. */
+int parse_int_literal(Str text, unsigned long long *out);
 
 TyCtx *sema_types(Sema *s);
 StructInfo *sema_root(Sema *s);
