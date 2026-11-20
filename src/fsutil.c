@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     long size;
@@ -38,6 +42,27 @@ char *read_file(const char *path) {
     buf[size] = '\0';
     fclose(f);
     return buf;
+}
+
+int write_file(const char *path, const unsigned char *data, size_t len, int executable) {
+    FILE *f = fopen(path, "wb");
+    int ok;
+
+    if (!f) {
+        return 0;
+    }
+    ok = len == 0 || fwrite(data, 1, len, f) == len;
+    if (fclose(f) != 0) {
+        ok = 0;
+    }
+#if !defined(_WIN32)
+    if (ok && executable) {
+        ok = chmod(path, 0755) == 0;
+    }
+#else
+    (void)executable;
+#endif
+    return ok;
 }
 
 char *path_canonical(const char *path) {
