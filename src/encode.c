@@ -1,6 +1,7 @@
 #include "encode.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -409,8 +410,9 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
     for (i = 0; i < n; i++) {
         const Inst *in = asm_at(a, i);
         if (!enc_inst(&e, in, 0, 0)) {
-            snprintf(err, errcap, "cannot encode instruction %lu: %s", (unsigned long)i,
-                     asm_format_inst(a, in));
+            char *text = asm_format_inst(a, in);
+            snprintf(err, errcap, "cannot encode instruction %lu: %s", (unsigned long)i, text);
+            free(text);
             return 0;
         }
         sz[i] = (size_t)e.n;
