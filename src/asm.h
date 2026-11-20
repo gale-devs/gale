@@ -83,6 +83,9 @@ const char *asm_label_name(const Asm *a, int label);
 
 void asm_emit(Asm *a, Inst in);
 size_t asm_count(const Asm *a);
+/* Changes the immediate (second operand) of an instruction already emitted, e.g. the
+ * frame size in a function prologue once the body has been generated. */
+void asm_set_imm(Asm *a, size_t index, long long value);
 const Inst *asm_at(const Asm *a, size_t i);
 
 /* Operand constructors. */

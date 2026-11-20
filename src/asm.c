@@ -31,6 +31,10 @@ size_t asm_count(const Asm *a) {
     return a->insts.len;
 }
 
+void asm_set_imm(Asm *a, size_t index, long long value) {
+    ((Inst *)a->insts.data)[index].b.imm = value;
+}
+
 const Inst *asm_at(const Asm *a, size_t i) {
     return &((const Inst *)a->insts.data)[i];
 }
