@@ -147,6 +147,19 @@ static size_t size_of(Gen *g, Ty *t, int line, int col) {
     return s;
 }
 
+/* Index of the field called `name`, and the layout of its struct. */
+static size_t field_index(Gen *g, StructInfo *si, Str name, int line, int col) {
+    size_t i;
+
+    struct_layout(g, si, line, col);
+    for (i = 0; i < si->nfields; i++) {
+        if (si->fields[i].name.len == name.len && memcmp(si->fields[i].name.ptr, name.ptr, name.len) == 0) {
+            return i;
+        }
+    }
+    fail(g, line, col, "internal error: no field '%.*s'", (int)name.len, name.ptr);
+}
+
 /* ---- frame ---- */
 
 /* Reserves `size` bytes in the frame; returns the offset from rbp (negative). */
@@ -269,6 +282,7 @@ static int request_func(Gen *g, Sym *fn) {
 
 static void gen_expr(Gen *g, Expr *e);
 static void gen_place(Gen *g, Expr *e);
+static void load_through_rax(Gen *g, Expr *e);
 
 static long long literal_value(Gen *g, const Expr *e) {
     unsigned long long v;
@@ -473,6 +487,13 @@ static void gen_unary(Gen *g, Expr *e) {
         asm_op1(g->as, X_NOT, REG(RAX));
         normalize(g, e->ty);
         break;
+    case TOK_STAR: /* *p: the pointer is the address */
+        gen_expr(g, x);
+        load_through_rax(g, e);
+        break;
+    case TOK_AMP:
+        gen_place(g, x);
+        break;
     default:
         fail(g, e->line, e->col, "this operator is not supported by the code generator yet");
     }
@@ -625,6 +646,39 @@ static void gen_assign(Gen *g, Expr *e) {
     copy_bytes(g, size_of(g, l->ty, e->line, e->col));
 }
 
+/* Builds the struct in a fresh frame slot, field by field. rax = its address. */
+static void gen_struct_lit(Gen *g, Expr *e) {
+    StructInfo *si = e->ty->strukt;
+    size_t sz, al, i;
+    long slot;
+
+    layout(g, e->ty, &sz, &al, e->line, e->col);
+    slot = alloc_slot(g, sz, al);
+    for (i = 0; i < e->u.struct_lit.nfields; i++) {
+        FieldInit *fi = e->u.struct_lit.fields[i];
+        size_t j = field_index(g, si, fi->name, fi->line, fi->col);
+        Ty *ft = si->fields[j].ty;
+        long at = slot + (long)si->offsets[j];
+
+        gen_expr(g, fi->value);
+        if (classify(g, ft, fi->line, fi->col) == C_AGG) {
+            asm_op2(g->as, X_MOV, 8, REG(RSI), REG(RAX));
+            asm_op2(g->as, X_LEA, 8, REG(RDI), MEM(RBP, at));
+            copy_bytes(g, size_of(g, ft, fi->line, fi->col));
+        } else {
+            store_scalar(g, ft, MEM(RBP, at), RAX);
+        }
+    }
+    asm_op2(g->as, X_LEA, 8, REG(RAX), MEM(RBP, slot));
+}
+
+/* rax = the scalar of type e->ty at the address in rax, or (for structs) just the address */
+static void load_through_rax(Gen *g, Expr *e) {
+    if (classify(g, e->ty, e->line, e->col) == C_SCALAR) {
+        load_scalar(g, e->ty, MEM(RAX, 0), RAX);
+    }
+}
+
 static void gen_expr(Gen *g, Expr *e) {
     switch (e->kind) {
     case EXPR_INT:
@@ -664,6 +718,14 @@ static void gen_expr(Gen *g, Expr *e) {
     case EXPR_ASSIGN:
         gen_assign(g, e);
         break;
+    case EXPR_FIELD:
+    case EXPR_INDEX:
+        gen_place(g, e);
+        load_through_rax(g, e);
+        break;
+    case EXPR_STRUCT_LIT:
+        gen_struct_lit(g, e);
+        break;
     default:
         fail(g, e->line, e->col, "this kind of expression is not supported by the code generator yet");
     }
@@ -675,6 +737,44 @@ static void gen_place(Gen *g, Expr *e) {
     case EXPR_IDENT:
         asm_op2(g->as, X_LEA, 8, REG(RAX), MEM(RBP, e->sym->frame_off));
         break;
+    case EXPR_FIELD: {
+        Expr *base = e->u.field.base;
+        Ty *st = base->ty->kind == TY_PTR ? base->ty->elem : base->ty;
+        size_t j = field_index(g, st->strukt, e->u.field.name, e->line, e->col);
+        size_t off = st->strukt->offsets[j];
+
+        gen_expr(g, base); /* a pointer to the struct, or the address of the struct value */
+        if (off) {
+            asm_op2(g->as, X_ADD, 8, REG(RAX), IMM((long long)off));
+        }
+        break;
+    }
+    case EXPR_INDEX: {
+        Expr *base = e->u.index.base;
+        size_t es;
+
+        if (base->ty->kind != TY_PTR) {
+            fail(g, e->line, e->col, "indexing %s is not supported by the code generator yet (pointers are)",
+                 ty_str(g->tys, base->ty));
+        }
+        es = size_of(g, base->ty->elem, e->line, e->col);
+        gen_expr(g, base);
+        asm_op1(g->as, X_PUSH, REG(RAX));
+        gen_expr(g, e->u.index.index);
+        if (es != 1) {
+            asm_op2(g->as, X_MOV, 8, REG(RCX), IMM((long long)es));
+            asm_op2(g->as, X_IMUL, 8, REG(RAX), REG(RCX));
+        }
+        asm_op1(g->as, X_POP, REG(RCX));
+        asm_op2(g->as, X_ADD, 8, REG(RAX), REG(RCX));
+        break;
+    }
+    case EXPR_UNARY:
+        if (e->u.unary.op == TOK_STAR) {
+            gen_expr(g, e->u.unary.operand); /* the pointer is the address */
+            break;
+        }
+        fail(g, e->line, e->col, "this kind of place is not supported by the code generator yet");
     default:
         fail(g, e->line, e->col, "this kind of place is not supported by the code generator yet");
     }
