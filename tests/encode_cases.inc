@@ -258,6 +258,7 @@ CASE("setne sil", "40 0f 95 c6", inst_cc(X_SETCC, CC_NE, REG(RSI)));
 CASE("setg r8b", "41 0f 9f c0", inst_cc(X_SETCC, CC_G, REG(R8)));
 CASE("setl cl", "0f 9c c1", inst_cc(X_SETCC, CC_L, REG(RCX)));
 CASE("ret", "c3", inst0(X_RET));
+CASE("leave", "c9", inst0(X_LEAVE));
 CASE("syscall", "0f 05", inst0(X_SYSCALL));
 CASE("cqo", "48 99", inst0(X_CQO));
 CASE("nop", "90", inst0(X_NOP));

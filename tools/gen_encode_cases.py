@@ -33,7 +33,7 @@ CC = {"b": "CC_B", "ae": "CC_AE", "e": "CC_E", "ne": "CC_NE", "be": "CC_BE", "a"
 ALU = {"add": "X_ADD", "or": "X_OR", "and": "X_AND", "sub": "X_SUB", "xor": "X_XOR", "cmp": "X_CMP"}
 UNARY = {"idiv": "X_IDIV", "div": "X_DIV", "neg": "X_NEG", "not": "X_NOT"}
 SHIFT = {"shl": "X_SHL", "shr": "X_SHR", "sar": "X_SAR"}
-NOARG = {"ret": "X_RET", "syscall": "X_SYSCALL", "cqo": "X_CQO", "nop": "X_NOP",
+NOARG = {"ret": "X_RET", "leave": "X_LEAVE", "syscall": "X_SYSCALL", "cqo": "X_CQO", "nop": "X_NOP",
          "rep movsb": "X_REP_MOVSB"}
 
 
