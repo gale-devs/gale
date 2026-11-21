@@ -86,6 +86,8 @@ size_t asm_count(const Asm *a);
 /* Changes the immediate (second operand) of an instruction already emitted, e.g. the
  * frame size in a function prologue once the body has been generated. */
 void asm_set_imm(Asm *a, size_t index, long long value);
+/* Removes an instruction already emitted. Labels are not positions, so they stay valid. */
+void asm_remove(Asm *a, size_t index);
 const Inst *asm_at(const Asm *a, size_t i);
 
 /* Operand constructors. */

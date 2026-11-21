@@ -35,6 +35,12 @@ void asm_set_imm(Asm *a, size_t index, long long value) {
     ((Inst *)a->insts.data)[index].b.imm = value;
 }
 
+void asm_remove(Asm *a, size_t index) {
+    Inst *d = a->insts.data;
+    memmove(d + index, d + index + 1, (a->insts.len - index - 1) * sizeof(Inst));
+    a->insts.len--;
+}
+
 const Inst *asm_at(const Asm *a, size_t i) {
     return &((const Inst *)a->insts.data)[i];
 }
