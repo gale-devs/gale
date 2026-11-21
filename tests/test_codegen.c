@@ -5,8 +5,16 @@
 #if defined(__linux__) && defined(__x86_64__)
 #include <sys/wait.h>
 #define CAN_RUN 1
+#define PROG "build/cg_test_prog"
+#define RUN_CMD "./" PROG
+#elif defined(_WIN32)
+#define CAN_RUN 1
+#define PROG "build\\cg_test_prog.exe"
+#define RUN_CMD PROG
 #else
 #define CAN_RUN 0
+#define PROG "build/cg_test_prog"
+#define RUN_CMD "./" PROG
 #endif
 
 #include "arena.h"
@@ -16,13 +24,13 @@
 #include "encode.h"
 #include "fsutil.h"
 #include "parser.h"
+#include "pe.h"
 #include "sema.h"
 
-/* Compiles programs all the way to an ELF file and, on x86-64 Linux, runs them and
- * checks the exit status (the low 8 bits of main's result). Run from the repository
- * root: the programs are written to build/. */
-
-#define PROG "build/cg_test_prog"
+/* Compiles programs all the way to an executable (ELF on Linux, PE on Windows) and,
+ * on x86-64 Linux and Windows, runs them and checks the exit status (the low 8 bits
+ * of main's result). Run from the repository root: the programs are written to
+ * build/. */
 
 static int failures = 0;
 static int ran = 0;
@@ -35,7 +43,7 @@ typedef struct {
 } Build;
 
 /* Parses, checks, generates, encodes. Returns 1 on success; otherwise b->msg says why. */
-static int build(const char *src, Build *b) {
+static int build(const char *src, Target target, Build *b) {
     Arena a;
     ParseError pe;
     SemaError se;
@@ -64,7 +72,7 @@ static int build(const char *src, Build *b) {
         return 0;
     }
     asm_init(&as, &a);
-    if (!codegen(s, &as, &entry, &ce)) {
+    if (!codegen(s, &as, target, &entry, &ce)) {
         snprintf(b->msg, sizeof b->msg, "codegen %d:%d: %s", ce.line, ce.col, ce.msg);
         sema_free(s);
         arena_free(&a);
@@ -78,7 +86,11 @@ static int build(const char *src, Build *b) {
         arena_free(&a);
         return 0;
     }
-    b->elf = elf_build(code.data, code.len, labels[entry], &b->elf_len);
+    if (target == TARGET_WINDOWS) {
+        b->elf = pe_build(&as, &code, labels[entry], &b->elf_len);
+    } else {
+        b->elf = elf_build(code.data, code.len, labels[entry], &b->elf_len);
+    }
     sema_free(s);
     arena_free(&a);
     return b->elf != NULL;
@@ -93,7 +105,7 @@ static void release(Build *b) {
 static void run_case(const char *name, const char *src, int want) {
     Build b;
 
-    if (!build(src, &b)) {
+    if (!build(src, host_target(), &b)) {
         fprintf(stderr, "%s: does not compile: %s\n", name, b.msg);
         failures++;
         release(&b);
@@ -106,16 +118,24 @@ static void run_case(const char *name, const char *src, int want) {
             fprintf(stderr, "%s: cannot write %s\n", name, PROG);
             failures++;
         } else {
-            status = system("./" PROG);
+            int code;
+            status = system(RUN_CMD);
             ran++;
+#if defined(_WIN32)
+            code = status;
+            if (code != (want & 255)) {
+                fprintf(stderr, "%s: exit status %d, want %d\n  %s\n", name, code, want & 255, src);
+                failures++;
+            }
+#else
             if (!WIFEXITED(status)) {
                 fprintf(stderr, "%s: the program did not exit normally (status %d)\n", name, status);
                 failures++;
-            } else if (WEXITSTATUS(status) != (want & 255)) {
-                fprintf(stderr, "%s: exit status %d, want %d\n  %s\n", name, WEXITSTATUS(status),
-                        want & 255, src);
+            } else if ((code = WEXITSTATUS(status)) != (want & 255)) {
+                fprintf(stderr, "%s: exit status %d, want %d\n  %s\n", name, code, want & 255, src);
                 failures++;
             }
+#endif
         }
     }
 #else
@@ -126,7 +146,7 @@ static void run_case(const char *name, const char *src, int want) {
 
 static void compile_error(const char *name, const char *src, const char *needle) {
     Build b;
-    if (build(src, &b) || !strstr(b.msg, needle)) {
+    if (build(src, host_target(), &b) || !strstr(b.msg, needle)) {
         fprintf(stderr, "%s: expected a compile error containing \"%s\", got \"%s\"\n", name, needle, b.msg);
         failures++;
     }
@@ -370,7 +390,7 @@ static void test_reachability(void) {
      * generator cannot do yet */
     run_case("unused function", "func unused() -> f64 = 1.5\n" MAIN("3"), 3);
 
-    if (build(MAIN("1") "func other() -> i32 = 2\n", &b)) {
+    if (build(MAIN("1") "func other() -> i32 = 2\n", host_target(), &b)) {
         if (strstr(b.asm_text, "other")) {
             fprintf(stderr, "an unused function was generated:\n%s", b.asm_text);
             failures++;
@@ -385,7 +405,7 @@ static void test_reachability(void) {
 static void test_output(void) {
     Build b;
 
-    if (!build(MAIN("42"), &b)) {
+    if (!build(MAIN("42"), TARGET_LINUX, &b)) {
         fprintf(stderr, "output: %s\n", b.msg);
         failures++;
         release(&b);
@@ -402,6 +422,39 @@ static void test_output(void) {
      * + main (push 1 + mov 3 + mov eax,42 5 + mov 3 + pop 1 + ret 1 = 14 bytes) */
     if (b.elf_len != ELF_HEADERS_SIZE + 15 + 14) {
         fprintf(stderr, "unexpected ELF size %lu\n", (unsigned long)b.elf_len);
+        failures++;
+    }
+    release(&b);
+}
+
+/* The Windows build: the exit goes through kernel32!ExitProcess. This checks the
+ * generated code and file structure on any host; running it needs Windows. */
+static void test_windows_target(void) {
+    Build b;
+
+    if (!build(MAIN("42"), TARGET_WINDOWS, &b)) {
+        fprintf(stderr, "windows: %s\n", b.msg);
+        failures++;
+        release(&b);
+        return;
+    }
+    if (strcmp(b.asm_text,
+               "_start:\n    call main\n    mov rcx, rax\n    and rcx, 255\n    sub rsp, 40\n"
+               "    call qword ptr [rip+ExitProcess]\n"
+               "main:\n    push rbp\n    mov rbp, rsp\n    mov rax, 42\n.L2:\n    mov rsp, rbp\n"
+               "    pop rbp\n    ret\n") != 0) {
+        fprintf(stderr, "unexpected Windows assembly:\n%s", b.asm_text);
+        failures++;
+    }
+    if (b.elf_len < 0x400 || b.elf[0] != 'M' || b.elf[1] != 'Z' || memcmp(b.elf + 0x40, "PE\0\0", 4) != 0) {
+        fprintf(stderr, "the Windows build is not a PE file\n");
+        failures++;
+    }
+    release(&b);
+
+    /* the same program built for both targets differs only in how it exits */
+    if (!build("func main() = {}\n", TARGET_WINDOWS, &b) || !strstr(b.asm_text, "mov rcx, 0")) {
+        fprintf(stderr, "void main should exit with 0 on Windows\n%s\n", b.asm_text ? b.asm_text : b.msg);
         failures++;
     }
     release(&b);
@@ -430,6 +483,7 @@ int main(void) {
     test_examples();
     test_reachability();
     test_output();
+    test_windows_target();
     test_errors();
 
     if (failures) {
