@@ -344,6 +344,9 @@ static int enc_inst(Enc *e, const Inst *in, int short_jump, long rel) {
     case X_RET:
         put(e, 0xC3);
         return 1;
+    case X_LEAVE:
+        put(e, 0xC9);
+        return 1;
     case X_JMP:
         if (short_jump) {
             put(e, 0xEB);
