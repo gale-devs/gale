@@ -332,6 +332,12 @@ static int enc_inst(Enc *e, const Inst *in, int short_jump, long rel) {
         put(e, 0x58 + (a->reg & 7));
         return 1;
     case X_CALL:
+        if (a->kind == OPD_IMPORT) {
+            put(e, 0xFF); /* call qword ptr [rip + disp32] */
+            put(e, 0x15);
+            put32(e, rel);
+            return 1;
+        }
         put(e, 0xE8);
         put32(e, rel);
         return 1;
@@ -403,6 +409,7 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
     size_t *off = arena_alloc(arena, (n + 1) * sizeof(size_t));
     unsigned char *is_short = arena_alloc(arena, n + 1);
     unsigned char *defined = arena_alloc(arena, nl + 1);
+    size_t *import_slot = arena_alloc(arena, (asm_import_count(a) + 1) * sizeof(size_t));
     int changed;
     Enc e;
 
@@ -456,13 +463,18 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
     } while (changed);
 
     total = off[n];
+    out->import_base = (total + 7) / 8 * 8;
+    asm_import_slots(a, import_slot);
     out->data = arena_alloc(arena, total + 1);
     out->len = 0;
     for (i = 0; i < n; i++) {
         const Inst *in = asm_at(a, i);
         long rel = 0;
 
-        if (is_jump(in->op) || in->op == X_CALL) {
+        if (in->op == X_CALL && in->a.kind == OPD_IMPORT) {
+            rel = (long)((long long)(out->import_base + 8 * import_slot[in->a.label]) -
+                         (long long)(off[i] + sz[i]));
+        } else if (is_jump(in->op) || in->op == X_CALL) {
             if (!defined[in->a.label]) {
                 snprintf(err, errcap, "label %d is used but not defined", in->a.label);
                 return 0;

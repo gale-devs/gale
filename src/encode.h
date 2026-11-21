@@ -9,6 +9,10 @@
 typedef struct {
     unsigned char *data;
     size_t len;
+    /* Offset (from the start of the code) of the import address table, which the
+     * executable writer places right after the code. Calls to imports are encoded
+     * relative to it. */
+    size_t import_base;
 } Code;
 
 /* Encodes a whole program to x86-64 machine code (allocated in the arena).
