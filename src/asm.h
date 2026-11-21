@@ -19,7 +19,8 @@ typedef enum {
     OPD_REG,
     OPD_IMM,
     OPD_MEM,   /* [reg + disp] */
-    OPD_LABEL
+    OPD_LABEL,
+    OPD_IMPORT /* an imported function (X_CALL only): call qword ptr [rip + its import slot] */
 } OpdKind;
 
 typedef struct {
@@ -27,7 +28,7 @@ typedef struct {
     Reg reg;         /* REG: the register; MEM: the base register */
     long long imm;   /* IMM */
     long disp;       /* MEM */
-    int label;       /* LABEL */
+    int label;       /* LABEL: the label; IMPORT: the import index */
 } Opd;
 
 typedef enum {
@@ -43,7 +44,7 @@ typedef enum {
     X_CQO,
     X_SHL, X_SHR, X_SAR,  /* r/m64, cl  or  r/m64, imm8 */
     X_PUSH, X_POP,
-    X_CALL,    /* call label */
+    X_CALL,    /* call label, or call an import */
     X_RET,
     X_JMP,     /* jmp label */
     X_JCC,     /* j<cc> label */
@@ -68,9 +69,15 @@ typedef struct {
 } Inst;
 
 typedef struct {
+    const char *dll;   /* e.g. "kernel32.dll" */
+    const char *name;  /* e.g. "ExitProcess" */
+} Import;
+
+typedef struct {
     Arena *arena;
     Vec insts;         /* Inst */
     Vec label_names;   /* const char*: NULL for anonymous labels */
+    Vec imports;       /* Import */
 } Asm;
 
 void asm_init(Asm *a, Arena *arena);
@@ -80,6 +87,18 @@ void asm_init(Asm *a, Arena *arena);
 int asm_new_label(Asm *a, const char *name);
 size_t asm_label_count(const Asm *a);
 const char *asm_label_name(const Asm *a, int label);
+
+/* Declares a function imported from a DLL (Windows); returns its index. Declaring the
+ * same function twice returns the same index. */
+int asm_import(Asm *a, const char *dll, const char *name);
+size_t asm_import_count(const Asm *a);
+const Import *asm_import_at(const Asm *a, size_t i);
+
+/* Where each import's address lives in the import address table (IAT), in 8-byte
+ * slots: the imports of one DLL are consecutive and followed by a zero slot. Fills
+ * slots[i] for every import (an array of asm_import_count entries) and returns the
+ * total number of slots. */
+size_t asm_import_slots(const Asm *a, size_t *slots);
 
 void asm_emit(Asm *a, Inst in);
 size_t asm_count(const Asm *a);
@@ -95,6 +114,7 @@ Opd opd_reg(Reg r);
 Opd opd_imm(long long v);
 Opd opd_mem(Reg base, long disp);
 Opd opd_label(int label);
+Opd opd_import(int import);
 
 /* Instruction constructors. */
 Inst inst0(XOp op);

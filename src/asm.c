@@ -8,6 +8,56 @@ void asm_init(Asm *a, Arena *arena) {
     a->arena = arena;
     vec_init(&a->insts, sizeof(Inst));
     vec_init(&a->label_names, sizeof(const char *));
+    vec_init(&a->imports, sizeof(Import));
+}
+
+int asm_import(Asm *a, const char *dll, const char *name) {
+    size_t i;
+    Import imp;
+    const Import *all = a->imports.data;
+
+    for (i = 0; i < a->imports.len; i++) {
+        if (strcmp(all[i].dll, dll) == 0 && strcmp(all[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+    imp.dll = dll;
+    imp.name = name;
+    vec_push(a->arena, &a->imports, &imp);
+    return (int)a->imports.len - 1;
+}
+
+size_t asm_import_count(const Asm *a) {
+    return a->imports.len;
+}
+
+const Import *asm_import_at(const Asm *a, size_t i) {
+    return &((const Import *)a->imports.data)[i];
+}
+
+size_t asm_import_slots(const Asm *a, size_t *slots) {
+    size_t n = a->imports.len, i, j, next = 0;
+    const Import *all = a->imports.data;
+
+    for (i = 0; i < n; i++) {
+        int first = 1;
+        for (j = 0; j < i; j++) {
+            if (strcmp(all[j].dll, all[i].dll) == 0) {
+                first = 0;
+                break;
+            }
+        }
+        if (!first) {
+            continue; /* numbered together with the first import of its DLL */
+        }
+        for (j = i; j < n; j++) {
+            if (strcmp(all[j].dll, all[i].dll) == 0) {
+                slots[j] = next++;
+            }
+        }
+        next++; /* the zero slot that ends this DLL's table */
+    }
+    return next;
 }
 
 int asm_new_label(Asm *a, const char *name) {
@@ -67,6 +117,14 @@ Opd opd_mem(Reg base, long disp) {
     o.kind = OPD_MEM;
     o.reg = base;
     o.disp = disp;
+    return o;
+}
+
+Opd opd_import(int import) {
+    Opd o;
+    memset(&o, 0, sizeof o);
+    o.kind = OPD_IMPORT;
+    o.label = import;
     return o;
 }
 
@@ -244,6 +302,9 @@ static void put_opd(char *buf, size_t cap, const Asm *a, const Opd *o, int size,
         }
         break;
     }
+    case OPD_IMPORT:
+        snprintf(w, room, "qword ptr [rip+%s]", asm_import_at(a, o->label)->name);
+        break;
     case OPD_NONE:
         break;
     }
