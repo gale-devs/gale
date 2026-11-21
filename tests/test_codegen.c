@@ -220,6 +220,149 @@ static void test_functions(void) {
     run_case("inner call", "struct m = {\n  func h(a: i32) -> i32 = a + 1\n  export func g(a: i32) -> i32 = h(a) * 2\n}\n" MAIN("m.g(4)"), 10);
 }
 
+#define P_STRUCT "struct P = { x: i32, y: i32 }\n"
+
+static void test_pointers(void) {
+    run_case("store through pointer", MAIN("{\n  var x = 5\n  let p = &x\n  *p = 9\n  x\n}"), 9);
+    run_case("load through pointer", MAIN("{\n  let x = 7\n  let p = &x\n  *p + 1\n}"), 8);
+    run_case("pointer param", "func inc(p: *i32) = { *p = *p + 1 }\n" MAIN("{\n  var n = 1\n  inc(&n)\n  inc(&n)\n  n\n}"), 3);
+    run_case("swap",
+             "func swap(a: *i32, b: *i32) = {\n  let t = *a\n  *a = *b\n  *b = t\n}\n"
+             MAIN("{\n  var x = 1\n  var y = 2\n  swap(&x, &y)\n  x * 10 + y\n}"), 21);
+    run_case("pointer to pointer", MAIN("{\n  var x = 3\n  var p = &x\n  let pp = &p\n  **pp = 8\n  x\n}"), 8);
+    run_case("i8 through pointer", MAIN("{\n  var b: i8 = -3\n  let p = &b\n  *p as i32 + 10\n}"), 7);
+    run_case("u8 write", MAIN("{\n  var b: u8 = 255\n  let p = &b\n  *p = 1\n  b as i32\n}"), 1);
+    run_case("i8 write", MAIN("{\n  var b: i8 = -1\n  let p = &b\n  *p = -2\n  b as i32\n}"), -2);
+    run_case("pointer compare",
+             MAIN("{\n  var a = 1\n  var b = 2\n  let p = &a\n  let q = &a\n  let r = &b\n  if p == q && p != r { 1 } else { 0 }\n}"), 1);
+    run_case("pointer cast", MAIN("{\n  var a = 5\n  let p = &a\n  let u = p as usize\n  let q = u as *i32\n  *q\n}"), 5);
+}
+
+static void test_structs(void) {
+    run_case("fields", P_STRUCT MAIN("{\n  let p = P { x: 3, y: 4 }\n  p.x * p.x + p.y * p.y\n}"), 25);
+    run_case("field assign", P_STRUCT MAIN("{\n  var p = P { x: 1, y: 2 }\n  p.x = 10\n  p.y = p.y + 5\n  p.x + p.y\n}"), 17);
+    run_case("through pointer", P_STRUCT "func sum(p: *P) -> i32 = p.x + p.y\n"
+             MAIN("{\n  let p = P { x: 3, y: 4 }\n  sum(&p)\n}"), 7);
+    run_case("mutate through pointer", P_STRUCT "func zero(p: *P) = {\n  p.x = 0\n  p.y = 0\n}\n"
+             MAIN("{\n  var p = P { x: 3, y: 4 }\n  zero(&p)\n  p.x + p.y + 1\n}"), 1);
+    run_case("pass by value", P_STRUCT "func f(p: P) -> i32 = p.x - p.y\n" MAIN("f(P { x: 10, y: 3 })"), 7);
+    run_case("big struct then arg",
+             "struct Big = { a: i32, b: i32, c: i32, d: i32, e: i32 }\n"
+             "func g(x: Big, k: i32) -> i32 = x.a + x.e * 2 + k\n"
+             MAIN("g(Big { a: 1, b: 0, c: 0, d: 0, e: 5 }, 100)"), 111);
+    run_case("arg then big struct",
+             "struct Big = { a: i32, b: i32, c: i32, d: i32, e: i32 }\n"
+             "func h(k: i32, x: Big) -> i32 = k * 100 + x.e\n"
+             MAIN("h(2, Big { a: 1, b: 0, c: 0, d: 0, e: 7 })"), 207);
+    run_case("return struct", P_STRUCT "func mk(a: i32, b: i32) -> P = P { x: a, y: b }\n"
+             MAIN("{\n  let p = mk(3, 5)\n  p.x * 10 + p.y\n}"), 35);
+    run_case("return local struct",
+             P_STRUCT "func mk2() -> P = {\n  var p = P { x: 1, y: 2 }\n  p.x = 7\n  p\n}\n"
+             MAIN("{\n  let p = mk2()\n  p.x * 10 + p.y\n}"), 72);
+    run_case("field of call result", P_STRUCT "func mk(a: i32, b: i32) -> P = P { x: a, y: b }\n" MAIN("mk(3, 5).y"), 5);
+    run_case("nested struct",
+             P_STRUCT "struct R = { o: P, w: i32, h: i32 }\n"
+             MAIN("{\n  var r = R { o: P { x: 1, y: 2 }, w: 3, h: 4 }\n  r.o.y = 9\n  r.o.x + r.o.y + r.w * r.h\n}"), 22);
+    run_case("pass nested field by value",
+             P_STRUCT "struct R = { o: P, w: i32 }\nfunc gx(p: P) -> i32 = p.x * 10 + p.y\n"
+             MAIN("{\n  let r = R { o: P { x: 4, y: 2 }, w: 1 }\n  gx(r.o)\n}"), 42);
+    run_case("mixed layout",
+             "struct M = { a: u8, b: i32, c: u8, d: i64 }\n"
+             MAIN("{\n  let m = M { a: 1, b: 2, c: 3, d: 4 }\n  (m.a as i32) + m.b + (m.c as i32) + (m.d as i32)\n}"), 10);
+    run_case("sign extension of fields",
+             "struct S = { a: i8, b: u8 }\n"
+             MAIN("{\n  let s = S { a: -1, b: 255 }\n  (s.a as i32) + (s.b as i32)\n}"), 254);
+    run_case("struct copy", P_STRUCT MAIN("{\n  var a = P { x: 1, y: 2 }\n  var b = a\n  b.x = 9\n  a.x * 10 + b.x\n}"), 19);
+    run_case("struct assign", P_STRUCT MAIN("{\n  var a = P { x: 1, y: 2 }\n  var b = P { x: 5, y: 6 }\n  a = b\n  a.x + a.y\n}"), 11);
+    run_case("pointer to field", P_STRUCT MAIN("{\n  var p = P { x: 1, y: 2 }\n  let q = &p.y\n  *q = 8\n  p.x + p.y\n}"), 9);
+}
+
+static void test_pointer_indexing(void) {
+    run_case("index i32", P_STRUCT MAIN("{\n  var s = P { x: 3, y: 4 }\n  let p = &s.x\n  p[0] * 10 + p[1]\n}"), 34);
+    run_case("index i64", "struct Q = { a: i64, b: i64 }\n"
+             MAIN("{\n  var q = Q { a: 3, b: 4 }\n  let p = &q.a\n  (p[0] * 10 + p[1]) as i32\n}"), 34);
+    run_case("index u8", "struct B = { a: u8, b: u8, c: u8 }\n"
+             MAIN("{\n  var b = B { a: 1, b: 2, c: 3 }\n  let p = &b.a\n  (p[0] as i32) + (p[1] as i32) * 10 + (p[2] as i32) * 100\n}"), 321);
+    run_case("index store", P_STRUCT MAIN("{\n  var s = P { x: 3, y: 4 }\n  let p = &s.x\n  p[1] = 7\n  s.x + s.y\n}"), 10);
+    run_case("index variable", P_STRUCT MAIN("{\n  var s = P { x: 3, y: 4 }\n  let p = &s.x\n  var i = 1\n  p[i] + p[i - 1]\n}"), 7);
+}
+
+static void test_methods(void) {
+    const char *counter =
+        "struct Counter = {\n"
+        "  n: i32\n"
+        "  export func inc(c: *Counter) = { c.n = c.n + 1 }\n"
+        "  export func get(c: Counter) -> i32 = c.n\n"
+        "  export func add(c: *Counter, k: i32) -> i32 = c.n + k\n"
+        "  export func make(k: i32) -> Counter = Counter { n: k }\n"
+        "}\n";
+    char src[1200];
+
+    snprintf(src, sizeof src, "%s" MAIN("{\n  var c = Counter { n: 0 }\n  c.inc()\n  c.inc()\n  c.add(5) + c.get()\n}"), counter);
+    run_case("methods", src, 9);
+    snprintf(src, sizeof src, "%s" "func bump(c: *Counter) = { c.inc()\n c.inc() }\n"
+             MAIN("{\n  var c = Counter { n: 10 }\n  bump(&c)\n  c.get()\n}"), counter);
+    run_case("method through a pointer", src, 12);
+    snprintf(src, sizeof src, "%s" "func read(c: *Counter) -> i32 = c.get()\n"
+             MAIN("{\n  let c = Counter { n: 6 }\n  read(&c)\n}"), counter);
+    run_case("receiver is dereferenced", src, 6);
+    snprintf(src, sizeof src, "%s" MAIN("{\n  let c = Counter.make(5)\n  c.get() + Counter.make(2).get()\n}"), counter);
+    run_case("function in a struct", src, 7);
+}
+
+static void test_defer_and_short_circuit(void) {
+    run_case("defer runs at the end",
+             "func f(p: *i32) = {\n  defer *p = *p * 2\n  *p = *p + 3\n}\n"
+             MAIN("{\n  var n = 1\n  f(&n)\n  n\n}"), 8);
+    run_case("defer order is last in, first out",
+             "func f(p: *i32) = {\n  defer *p = *p * 10\n  defer *p = *p + 1\n  *p = 5\n}\n"
+             MAIN("{\n  var n = 0\n  f(&n)\n  n\n}"), 60);
+    run_case("defer with return",
+             "func g(p: *i32) -> i32 = {\n  defer *p = 99\n  return 7\n}\n"
+             MAIN("{\n  var n = 0\n  let r = g(&n)\n  r + n\n}"), 106);
+    run_case("defer in a nested block",
+             MAIN("{\n  var n = 0\n  {\n    defer n = n + 1\n    n = n + 10\n  }\n  n\n}"), 11);
+    run_case("return in a loop runs defers",
+             "func h(p: *i32) -> i32 = {\n  defer *p = *p + 1\n  var i = 0\n  while i < 10 {\n    if i == 3 { return i }\n    i = i + 1\n  }\n  0\n}\n"
+             MAIN("{\n  var n = 0\n  let r = h(&n)\n  r * 10 + n\n}"), 31);
+    run_case("defer keeps the block value",
+             "func f(p: *i32) -> i32 = {\n  defer *p = 50\n  *p + 1\n}\n"
+             MAIN("{\n  var n = 4\n  let r = f(&n)\n  r * 10 + n / 10\n}"), 55);
+    run_case("and short-circuits",
+             "func bump(p: *i32) -> bool = {\n  *p = *p + 1\n  true\n}\n"
+             MAIN("{\n  var n = 0\n  if false && bump(&n) { }\n  if true || bump(&n) { }\n  n\n}"), 0);
+    run_case("and evaluates the right side",
+             "func bump(p: *i32) -> bool = {\n  *p = *p + 1\n  true\n}\n"
+             MAIN("{\n  var n = 0\n  if true && bump(&n) { }\n  if false || bump(&n) { }\n  n\n}"), 2);
+    compile_error("return in defer",
+                  "func f() -> i32 = {\n  defer { return 1 }\n  2\n}\n" MAIN("f()"),
+                  "'return' is not allowed inside a deferred expression");
+}
+
+/* The examples in examples/checked/ compile and give these exit statuses. */
+static void test_examples(void) {
+    static const struct {
+        const char *path;
+        int want;
+    } files[] = {
+        {"examples/checked/fib.gale", 55},
+        {"examples/checked/sum.gale", 5050 & 255},
+        {"examples/checked/geometry.gale", 12},
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+        char *src = read_file(files[i].path);
+        if (!src) {
+            fprintf(stderr, "cannot read %s (run the tests from the repository root)\n", files[i].path);
+            failures++;
+            continue;
+        }
+        run_case(files[i].path, src, files[i].want);
+        free(src);
+    }
+}
+
 static void test_reachability(void) {
     Build b;
 
@@ -279,6 +422,12 @@ int main(void) {
     test_comparisons_and_logic();
     test_variables_and_loops();
     test_functions();
+    test_pointers();
+    test_structs();
+    test_pointer_indexing();
+    test_methods();
+    test_defer_and_short_circuit();
+    test_examples();
     test_reachability();
     test_output();
     test_errors();
