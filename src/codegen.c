@@ -899,7 +899,15 @@ static Sym *find_main(Gen *g) {
     return NULL;
 }
 
-int codegen(Sema *sema, Asm *out, int *entry_label, CodegenError *err) {
+Target host_target(void) {
+#if defined(_WIN32)
+    return TARGET_WINDOWS;
+#else
+    return TARGET_LINUX;
+#endif
+}
+
+int codegen(Sema *sema, Asm *out, Target target, int *entry_label, CodegenError *err) {
     Gen g;
     Sym *main_fn;
     Ty *mret;
@@ -940,13 +948,26 @@ int codegen(Sema *sema, Asm *out, int *entry_label, CodegenError *err) {
     start = asm_new_label(g.as, "_start");
     asm_label(g.as, start);
     asm_op1(g.as, X_CALL, opd_label(request_func(&g, main_fn)));
-    if (mret->kind == TY_VOID) {
-        asm_op2(g.as, X_MOV, 8, REG(RDI), IMM(0));
+    if (target == TARGET_LINUX) {
+        if (mret->kind == TY_VOID) {
+            asm_op2(g.as, X_MOV, 8, REG(RDI), IMM(0));
+        } else {
+            asm_op2(g.as, X_MOV, 8, REG(RDI), REG(RAX));
+        }
+        asm_op2(g.as, X_MOV, 8, REG(RAX), IMM(60)); /* exit */
+        asm_op0(g.as, X_SYSCALL);
     } else {
-        asm_op2(g.as, X_MOV, 8, REG(RDI), REG(RAX));
+        /* ExitProcess(code & 255). rsp is 8 mod 16 here, so 40 bytes leave it aligned
+         * with the 32 bytes of shadow space the Windows x64 convention requires. */
+        if (mret->kind == TY_VOID) {
+            asm_op2(g.as, X_MOV, 8, REG(RCX), IMM(0));
+        } else {
+            asm_op2(g.as, X_MOV, 8, REG(RCX), REG(RAX));
+            asm_op2(g.as, X_AND, 8, REG(RCX), IMM(255));
+        }
+        asm_op2(g.as, X_SUB, 8, REG(RSP), IMM(40));
+        asm_op1(g.as, X_CALL, opd_import(asm_import(g.as, "kernel32.dll", "ExitProcess")));
     }
-    asm_op2(g.as, X_MOV, 8, REG(RAX), IMM(60)); /* exit */
-    asm_op0(g.as, X_SYSCALL);
 
     for (i = 0; i < g.worklist.len; i++) {
         gen_func(&g, ((Sym **)g.worklist.data)[i]);
