@@ -413,14 +413,13 @@ static void test_output(void) {
     }
     if (strcmp(b.asm_text,
                "_start:\n    call main\n    mov rdi, rax\n    mov rax, 60\n    syscall\n"
-               "main:\n    push rbp\n    mov rbp, rsp\n    mov rax, 42\n.L2:\n    mov rsp, rbp\n"
-               "    pop rbp\n    ret\n") != 0) {
+               "main:\n    push rbp\n    mov rbp, rsp\n    mov rax, 42\n.L2:\n    leave\n    ret\n") != 0) {
         fprintf(stderr, "unexpected assembly:\n%s", b.asm_text);
         failures++;
     }
     /* headers + _start (call 5 + mov 3 + mov eax,60 5 + syscall 2 = 15 bytes)
-     * + main (push 1 + mov 3 + mov eax,42 5 + mov 3 + pop 1 + ret 1 = 14 bytes) */
-    if (b.elf_len != ELF_HEADERS_SIZE + 15 + 14) {
+     * + main (push 1 + mov 3 + mov eax,42 5 + leave 1 + ret 1 = 11 bytes) */
+    if (b.elf_len != ELF_HEADERS_SIZE + 15 + 11) {
         fprintf(stderr, "unexpected ELF size %lu\n", (unsigned long)b.elf_len);
         failures++;
     }
@@ -441,8 +440,7 @@ static void test_windows_target(void) {
     if (strcmp(b.asm_text,
                "_start:\n    call main\n    mov rcx, rax\n    and rcx, 255\n    sub rsp, 40\n"
                "    call qword ptr [rip+ExitProcess]\n"
-               "main:\n    push rbp\n    mov rbp, rsp\n    mov rax, 42\n.L2:\n    mov rsp, rbp\n"
-               "    pop rbp\n    ret\n") != 0) {
+               "main:\n    push rbp\n    mov rbp, rsp\n    mov rax, 42\n.L2:\n    leave\n    ret\n") != 0) {
         fprintf(stderr, "unexpected Windows assembly:\n%s", b.asm_text);
         failures++;
     }
