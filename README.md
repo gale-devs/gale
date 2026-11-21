@@ -65,6 +65,11 @@ gale --version
 | 標準ライブラリ・小数・文字列 | 未着手 |
 | セルフホスティング | 未着手 |
 
+## 開発用ツール
+
+- `tools/gen_encode_cases.py`: x86-64 エンコーダのテストケースを生成する。GNU as(binutils)で組み立てた結果を正解として使うので、エンコーダを変えるときだけ実行する。生成物は `tests/encode_*.inc` にコミットしてある
+- `tools/fuzz_arith.py`: 整数型・演算子・キャスト・比較をランダムに組み合わせたプログラムをコンパイルして実行し、Python での評価結果と終了コードを突き合わせる(Linux x86-64 のみ): `python3 tools/fuzz_arith.py build/gale 300 1`
+
 ## CI
 
 GitHub Actions で push / PR ごとに、次の環境でビルドとテストを実行する。
