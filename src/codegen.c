@@ -322,6 +322,36 @@ static int is_comparison(TokenKind op) {
     return op == TOK_EQ || op == TOK_NE || op == TOK_LT || op == TOK_LE || op == TOK_GT || op == TOK_GE;
 }
 
+/* If e is an integer literal that fits a sign-extended 32-bit immediate (so the
+ * immediate means the same 64-bit value as the literal), returns 1 and sets *v. */
+static int literal_imm(Gen *g, const Expr *e, long long *v) {
+    long long x;
+
+    if (e->kind != EXPR_INT) {
+        return 0;
+    }
+    x = literal_value(g, e);
+    if (x < -2147483648LL || x > 2147483647LL) {
+        return 0;
+    }
+    *v = x;
+    return 1;
+}
+
+/* The instruction for `rax = rax <op> imm`, if there is one. */
+static int imm_op(TokenKind op, int sgn, long long v, XOp *out) {
+    switch (op) {
+    case TOK_PLUS: *out = X_ADD; return 1;
+    case TOK_MINUS: *out = X_SUB; return 1;
+    case TOK_AMP: *out = X_AND; return 1;
+    case TOK_PIPE: *out = X_OR; return 1;
+    case TOK_CARET: *out = X_XOR; return 1;
+    case TOK_SHL: *out = X_SHL; return v >= 0 && v <= 63;
+    case TOK_SHR: *out = sgn ? X_SAR : X_SHR; return v >= 0 && v <= 63;
+    default: return 0;
+    }
+}
+
 /* An operand that can be loaded straight into rcx without disturbing rax. */
 static int simple_operand(const Expr *e) {
     if (e->kind == EXPR_INT || e->kind == EXPR_BOOL) {
@@ -369,8 +399,14 @@ static void gen_branch(Gen *g, Expr *e, int label, int when) {
     }
     if (e->kind == EXPR_BINARY && is_comparison(e->u.binary.op)) {
         Cond cc = cond_for(e->u.binary.op, is_signed(e->u.binary.lhs->ty));
-        gen_operands(g, e->u.binary.lhs, e->u.binary.rhs);
-        asm_op2(g->as, X_CMP, 8, REG(RAX), REG(RCX));
+        long long imm;
+        if (literal_imm(g, e->u.binary.rhs, &imm)) {
+            gen_expr(g, e->u.binary.lhs);
+            asm_op2(g->as, X_CMP, 8, REG(RAX), IMM(imm));
+        } else {
+            gen_operands(g, e->u.binary.lhs, e->u.binary.rhs);
+            asm_op2(g->as, X_CMP, 8, REG(RAX), REG(RCX));
+        }
         asm_jcc(g->as, when ? cc : negate_cond(cc), label);
         return;
     }
@@ -418,11 +454,27 @@ static void gen_binary(Gen *g, Expr *e) {
         return;
     }
     if (is_comparison(op)) {
-        gen_operands(g, l, r);
-        asm_op2(g->as, X_CMP, 8, REG(RAX), REG(RCX));
+        long long imm;
+        if (literal_imm(g, r, &imm)) {
+            gen_expr(g, l);
+            asm_op2(g->as, X_CMP, 8, REG(RAX), IMM(imm));
+        } else {
+            gen_operands(g, l, r);
+            asm_op2(g->as, X_CMP, 8, REG(RAX), REG(RCX));
+        }
         asm_setcc(g->as, cond_for(op, is_signed(l->ty)), RAX);
         asm_op2(g->as, X_MOVZX, 1, REG(RAX), REG(RAX));
         return;
+    }
+    {
+        long long imm;
+        XOp xop;
+        if (literal_imm(g, r, &imm) && imm_op(op, is_signed(t), imm, &xop)) {
+            gen_expr(g, l);
+            asm_op2(g->as, xop, 8, REG(RAX), IMM(imm));
+            normalize(g, t);
+            return;
+        }
     }
     gen_operands(g, l, r);
     switch (op) {
@@ -875,8 +927,7 @@ static void gen_func(Gen *g, Sym *fn) {
     gen_expr(g, it->u.func.body);
     emit_result(g, it->u.func.body->ty, it->line, it->col);
     asm_label(g->as, g->ret_label);
-    asm_op2(g->as, X_MOV, 8, REG(RSP), REG(RBP));
-    asm_op1(g->as, X_POP, REG(RBP));
+    asm_op0(g->as, X_LEAVE);
     asm_op0(g->as, X_RET);
 
     if (g->frame == 0) {
@@ -897,6 +948,35 @@ static Sym *find_main(Gen *g) {
         }
     }
     return NULL;
+}
+
+/* Removes `jmp L` when L is defined right after it (possibly behind other labels). */
+static void drop_jumps_to_next(Asm *a) {
+    int changed;
+
+    do {
+        size_t i = 0;
+        changed = 0;
+        while (i < asm_count(a)) {
+            const Inst *in = asm_at(a, i);
+            int removed = 0;
+            if (in->op == X_JMP) {
+                size_t j = i + 1;
+                while (j < asm_count(a) && asm_at(a, j)->op == X_LABEL) {
+                    if (asm_at(a, j)->a.label == in->a.label) {
+                        asm_remove(a, i);
+                        removed = 1;
+                        changed = 1;
+                        break;
+                    }
+                    j++;
+                }
+            }
+            if (!removed) {
+                i++;
+            }
+        }
+    } while (changed);
 }
 
 Target host_target(void) {
@@ -972,6 +1052,7 @@ int codegen(Sema *sema, Asm *out, Target target, int *entry_label, CodegenError 
     for (i = 0; i < g.worklist.len; i++) {
         gen_func(&g, ((Sym **)g.worklist.data)[i]);
     }
+    drop_jumps_to_next(g.as);
     *entry_label = start;
     return 1;
 }
