@@ -46,6 +46,7 @@ typedef enum {
     X_PUSH, X_POP,
     X_CALL,    /* call label, or call an import */
     X_RET,
+    X_LEAVE,   /* mov rsp, rbp; pop rbp */
     X_JMP,     /* jmp label */
     X_JCC,     /* j<cc> label */
     X_SETCC,   /* set<cc> r8 */

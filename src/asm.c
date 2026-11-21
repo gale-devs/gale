@@ -261,6 +261,7 @@ static const char *mnemonic(XOp op) {
     case X_POP: return "pop";
     case X_CALL: return "call";
     case X_RET: return "ret";
+    case X_LEAVE: return "leave";
     case X_JMP: return "jmp";
     case X_SYSCALL: return "syscall";
     case X_REP_MOVSB: return "rep movsb";
