@@ -11,6 +11,7 @@
 #include "fsutil.h"
 #include "lexer.h"
 #include "parser.h"
+#include "pe.h"
 #include "sema.h"
 #include "unfold.h"
 
@@ -24,9 +25,11 @@ static void usage(FILE *out) {
             "  gale parse <file>                   print the syntax tree\n"
             "  gale expand [-I dir]... <file>      print the tree with `unfold`s expanded\n"
             "  gale check [-I dir]... <file>       expand `unfold`s and type-check\n"
-            "  gale asm [-I dir]... <file>         print the generated assembly\n"
-            "  gale build [-I dir]... <file> [-o out]\n"
-            "                                      compile to a Linux x86-64 executable\n"
+            "  gale asm [-I dir]... [--target t] <file>\n"
+            "                                      print the generated assembly\n"
+            "  gale build [-I dir]... [--target linux|windows] <file> [-o out]\n"
+            "                                      compile to an x86-64 executable (ELF or PE;\n"
+            "                                      the default is the system you run on)\n"
             "  gale --version | --help\n");
 }
 
@@ -90,13 +93,18 @@ typedef struct {
     const char *out;
     const char *includes[MAX_INCLUDES];
     size_t nincludes;
+    Target target;
 } Options;
 
-/* [-I dir]... <file> [-o out] */
-static int parse_options(int argc, char **argv, Options *o, int allow_out) {
+#define OPT_OUT 1    /* -o */
+#define OPT_TARGET 2 /* --target */
+
+/* [-I dir]... [--target t] <file> [-o out] */
+static int parse_options(int argc, char **argv, Options *o, int allowed) {
     int a;
 
     memset(o, 0, sizeof *o);
+    o->target = host_target();
     for (a = 0; a < argc; a++) {
         if (strcmp(argv[a], "-I") == 0) {
             if (a + 1 >= argc || o->nincludes >= MAX_INCLUDES) {
@@ -104,7 +112,21 @@ static int parse_options(int argc, char **argv, Options *o, int allow_out) {
                 return 0;
             }
             o->includes[o->nincludes++] = argv[++a];
-        } else if (allow_out && strcmp(argv[a], "-o") == 0) {
+        } else if ((allowed & OPT_TARGET) && strcmp(argv[a], "--target") == 0) {
+            if (a + 1 >= argc) {
+                fprintf(stderr, "gale: --target needs linux or windows\n");
+                return 0;
+            }
+            a++;
+            if (strcmp(argv[a], "linux") == 0) {
+                o->target = TARGET_LINUX;
+            } else if (strcmp(argv[a], "windows") == 0) {
+                o->target = TARGET_WINDOWS;
+            } else {
+                fprintf(stderr, "gale: unknown target '%s' (use linux or windows)\n", argv[a]);
+                return 0;
+            }
+        } else if ((allowed & OPT_OUT) && strcmp(argv[a], "-o") == 0) {
             if (a + 1 >= argc) {
                 fprintf(stderr, "gale: -o needs a file name\n");
                 return 0;
@@ -197,7 +219,7 @@ static int run_compiler(const Options *o, Stage stage, int print_tree) {
     asm_init(&as, &arena);
     {
         int entry;
-        if (!codegen(sema, &as, &entry, &cerr)) {
+        if (!codegen(sema, &as, o->target, &entry, &cerr)) {
             fprintf(stderr, "%s:%d:%d: error: %s\n", cerr.file[0] ? cerr.file : o->path, cerr.line,
                     cerr.col, cerr.msg);
             goto done;
@@ -215,13 +237,17 @@ static int run_compiler(const Options *o, Stage stage, int print_tree) {
             char err[300];
             size_t elf_len;
             unsigned char *elf;
-            const char *out = o->out ? o->out : "a.out";
+            const char *out = o->out ? o->out : (o->target == TARGET_WINDOWS ? "a.exe" : "a.out");
 
             if (!asm_encode(&as, &arena, &code, label_off, err, sizeof err)) {
                 fprintf(stderr, "gale: internal error: %s\n", err);
                 goto done;
             }
-            elf = elf_build(code.data, code.len, label_off[entry], &elf_len);
+            if (o->target == TARGET_WINDOWS) {
+                elf = pe_build(&as, &code, label_off[entry], &elf_len);
+            } else {
+                elf = elf_build(code.data, code.len, label_off[entry], &elf_len);
+            }
             if (!elf) {
                 fprintf(stderr, "gale: out of memory\n");
                 goto done;
@@ -251,7 +277,9 @@ done_noun:
 static int cmd_compile(int argc, char **argv, Stage stage) {
     Options o;
 
-    if (!parse_options(argc, argv, &o, stage == STAGE_BUILD)) {
+    int allowed = stage == STAGE_BUILD ? OPT_OUT | OPT_TARGET : stage == STAGE_ASM ? OPT_TARGET : 0;
+
+    if (!parse_options(argc, argv, &o, allowed)) {
         return 2;
     }
     return run_compiler(&o, stage, stage == STAGE_EXPAND);
