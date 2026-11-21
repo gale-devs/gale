@@ -173,7 +173,89 @@ static void test_labels_and_names(void) {
     arena_free(&ar);
 }
 
+static void test_imports(void) {
+    Arena ar;
+    Asm a;
+    Code code;
+    size_t labels[2];
+    size_t slots[3];
+    char err[200];
+    char got[64];
+    int f, g, h;
+
+    /* a call to an import is `call [rip + disp32]`, relative to the table after the code */
+    arena_init(&ar);
+    asm_init(&a, &ar);
+    f = asm_import(&a, "kernel32.dll", "ExitProcess");
+    checked++;
+    if (f != 0 || asm_import(&a, "kernel32.dll", "ExitProcess") != 0) {
+        fprintf(stderr, "importing the same function twice must give the same index\n");
+        failures++;
+    }
+    asm_op1(&a, X_CALL, opd_import(f));
+    asm_op0(&a, X_RET);
+    checked++;
+    if (!asm_encode(&a, &ar, &code, labels, err, sizeof err)) {
+        fprintf(stderr, "import call: %s\n", err);
+        failures++;
+    } else {
+        to_hex(code.data, code.len, got);
+        /* code is 7 bytes, the table starts at 8: disp = 8 - 6 = 2 */
+        if (strcmp(got, "ff 15 02 00 00 00 c3") != 0 || code.import_base != 8) {
+            fprintf(stderr, "import call: got %s (table at %lu)\n", got, (unsigned long)code.import_base);
+            failures++;
+        }
+    }
+    {
+        char *text = asm_format(&a);
+        checked++;
+        if (strcmp(text, "    call qword ptr [rip+ExitProcess]\n    ret\n") != 0) {
+            fprintf(stderr, "import call text:\n%s", text);
+            failures++;
+        }
+        free(text);
+    }
+    arena_free(&ar);
+
+    /* slots: each DLL's imports are consecutive and end with a zero slot */
+    arena_init(&ar);
+    asm_init(&a, &ar);
+    f = asm_import(&a, "kernel32.dll", "f1");
+    g = asm_import(&a, "user32.dll", "g1");
+    h = asm_import(&a, "kernel32.dll", "f2");
+    checked++;
+    if (asm_import_slots(&a, slots) != 5 || slots[f] != 0 || slots[h] != 1 || slots[g] != 3) {
+        fprintf(stderr, "wrong import slots: %lu %lu %lu\n", (unsigned long)slots[f],
+                (unsigned long)slots[h], (unsigned long)slots[g]);
+        failures++;
+    }
+    arena_free(&ar);
+
+    /* the second import's call reaches the second slot */
+    arena_init(&ar);
+    asm_init(&a, &ar);
+    f = asm_import(&a, "kernel32.dll", "f1");
+    g = asm_import(&a, "kernel32.dll", "f2");
+    asm_op1(&a, X_CALL, opd_import(g));
+    asm_op1(&a, X_CALL, opd_import(f));
+    asm_op0(&a, X_RET);
+    checked++;
+    if (!asm_encode(&a, &ar, &code, labels, err, sizeof err)) {
+        fprintf(stderr, "import calls: %s\n", err);
+        failures++;
+    } else {
+        to_hex(code.data, code.len, got);
+        /* code is 13 bytes, the table starts at 16: slot 1 -> 16+8-6 = 18, slot 0 -> 16-12 = 4 */
+        if (strcmp(got, "ff 15 12 00 00 00 ff 15 04 00 00 00 c3") != 0) {
+            fprintf(stderr, "import calls: got %s\n", got);
+            failures++;
+        }
+    }
+    arena_free(&ar);
+}
+
 int main(void) {
+    test_imports();
     run_inst_cases();
     run_seq_cases();
     test_errors();
