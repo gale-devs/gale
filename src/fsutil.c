@@ -1,5 +1,8 @@
 #if !defined(_WIN32)
-#define _POSIX_C_SOURCE 200809L /* realpath */
+/* realpath() needs the XSI extensions on glibc; without them it is not declared and
+ * the call would silently return an int (truncating the pointer). */
+#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #endif
 
 #include "fsutil.h"
