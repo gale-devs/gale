@@ -254,7 +254,48 @@ static void test_imports(void) {
     arena_free(&ar);
 }
 
+static void test_data(void) {
+    Arena ar;
+    Asm a;
+    Code code;
+    size_t labels[2];
+    char err[200];
+    char got[120];
+    int d, e, d2;
+
+    arena_init(&ar);
+    asm_init(&a, &ar);
+    d = asm_data(&a, (const unsigned char *)"AB", 2);
+    e = asm_data(&a, (const unsigned char *)"C", 1);
+    d2 = asm_data(&a, (const unsigned char *)"AB", 2);
+    checked++;
+    if (d != 0 || e != 1 || d2 != 0) {
+        fprintf(stderr, "identical constants must share one slot (got %d %d %d)\n", d, e, d2);
+        failures++;
+    }
+    asm_op2(&a, X_LEA, 8, opd_reg(RAX), opd_data(d));
+    asm_op2(&a, X_LEA, 8, opd_reg(R9), opd_data(d));
+    asm_op2(&a, X_LEA, 8, opd_reg(RSI), opd_data(e));
+    asm_op0(&a, X_RET);
+    checked++;
+    if (!asm_encode(&a, &ar, &code, labels, err, sizeof err)) {
+        fprintf(stderr, "lea data: %s\n", err);
+        failures++;
+    } else {
+        to_hex(code.data, code.len, got);
+        /* 22 bytes of code, then "AB" and "C"; bytes as produced by GNU as */
+        if (strcmp(got, "48 8d 05 0f 00 00 00 4c 8d 0d 08 00 00 00 48 8d 35 03 00 00 00 c3 41 42 43") != 0 ||
+            code.code_len != 22 || code.len != 25 || code.import_base != 32) {
+            fprintf(stderr, "lea data: got %s (code %lu, total %lu, table at %lu)\n", got,
+                    (unsigned long)code.code_len, (unsigned long)code.len, (unsigned long)code.import_base);
+            failures++;
+        }
+    }
+    arena_free(&ar);
+}
+
 int main(void) {
+    test_data();
     test_imports();
     run_inst_cases();
     run_seq_cases();
