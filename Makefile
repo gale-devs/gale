@@ -3,7 +3,7 @@ CC := gcc
 endif
 
 CFLAGS ?= -O2
-override CFLAGS += -std=c99 -Wall -Wextra -Wpedantic -Isrc
+override CFLAGS += -std=c99 -Wall -Wextra -Wpedantic -Werror=implicit-function-declaration -Isrc
 
 ifeq ($(OS),Windows_NT)
 EXE := .exe
