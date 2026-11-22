@@ -242,6 +242,14 @@ static int enc_inst(Enc *e, const Inst *in, int short_jump, long rel) {
         emit_rm(e, 0, 1, 0x63, -1, a->reg, b, 0);
         return 1;
     case X_LEA:
+        if (a->kind == OPD_REG && b->kind == OPD_DATA) {
+            /* lea r64, [rip + disp32] */
+            put(e, 0x48 | ((a->reg & 8) ? 4 : 0));
+            put(e, 0x8D);
+            put(e, ((a->reg & 7) << 3) | 5);
+            put32(e, rel);
+            return 1;
+        }
         if (a->kind != OPD_REG || b->kind != OPD_MEM) {
             return 0;
         }
@@ -413,6 +421,8 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
     unsigned char *is_short = arena_alloc(arena, n + 1);
     unsigned char *defined = arena_alloc(arena, nl + 1);
     size_t *import_slot = arena_alloc(arena, (asm_import_count(a) + 1) * sizeof(size_t));
+    size_t *data_off = NULL;
+    size_t data_end = 0;
     int changed;
     Enc e;
 
@@ -466,15 +476,33 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
     } while (changed);
 
     total = off[n];
-    out->import_base = (total + 7) / 8 * 8;
-    asm_import_slots(a, import_slot);
-    out->data = arena_alloc(arena, total + 1);
-    out->len = 0;
+    {
+        /* the data area follows the code, then the import table (8-byte aligned) */
+        size_t nd = asm_data_count(a), d, data_total = 0;
+        data_off = arena_alloc(arena, (nd + 1) * sizeof(size_t));
+        for (d = 0; d < nd; d++) {
+            data_off[d] = total + data_total;
+            data_total += asm_data_at(a, d)->len;
+        }
+        out->code_len = total;
+        out->import_base = (total + data_total + 7) / 8 * 8;
+        asm_import_slots(a, import_slot);
+        out->data = arena_alloc(arena, total + data_total + 1);
+        for (d = 0; d < nd; d++) {
+            if (asm_data_at(a, d)->len) {
+                memcpy(out->data + data_off[d], asm_data_at(a, d)->bytes, asm_data_at(a, d)->len);
+            }
+        }
+        out->len = 0;
+        data_end = total + data_total;
+    }
     for (i = 0; i < n; i++) {
         const Inst *in = asm_at(a, i);
         long rel = 0;
 
-        if (in->op == X_CALL && in->a.kind == OPD_IMPORT) {
+        if (in->op == X_LEA && in->b.kind == OPD_DATA) {
+            rel = (long)((long long)data_off[in->b.label] - (long long)(off[i] + sz[i]));
+        } else if (in->op == X_CALL && in->a.kind == OPD_IMPORT) {
             rel = (long)((long long)(out->import_base + 8 * import_slot[in->a.label]) -
                          (long long)(off[i] + sz[i]));
         } else if (is_jump(in->op) || in->op == X_CALL) {
@@ -492,5 +520,6 @@ int asm_encode(const Asm *a, Arena *arena, Code *out, size_t *label_off, char *e
         memcpy(out->data + out->len, e.b, (size_t)e.n);
         out->len += (size_t)e.n;
     }
+    out->len = data_end; /* the constants were placed after the code already */
     return 1;
 }

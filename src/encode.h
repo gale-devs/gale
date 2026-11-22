@@ -7,10 +7,11 @@
 #include "asm.h"
 
 typedef struct {
-    unsigned char *data;
-    size_t len;
+    unsigned char *data; /* the machine code, then the constants of the data area */
+    size_t len;          /* length of all of it */
+    size_t code_len;     /* length of the machine code alone */
     /* Offset (from the start of the code) of the import address table, which the
-     * executable writer places right after the code. Calls to imports are encoded
+     * executable writer places right after the data. Calls to imports are encoded
      * relative to it. */
     size_t import_base;
 } Code;
