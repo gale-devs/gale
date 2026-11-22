@@ -12,6 +12,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "pe.h"
+#include "prelude.h"
 #include "sema.h"
 #include "unfold.h"
 
@@ -156,7 +157,7 @@ typedef enum {
 /* Runs the compiler up to `stage`. Prints errors as file:line:col: error: message.
  * Returns 0 on success, 1 on a compile error. */
 static int run_compiler(const Options *o, Stage stage, int print_tree) {
-    const char *roots[MAX_INCLUDES + 1];
+    const char *roots[MAX_INCLUDES + 2];
     size_t nroots = 0, i;
     char *src, *dir;
     Arena arena;
@@ -181,6 +182,10 @@ static int run_compiler(const Options *o, Stage stage, int print_tree) {
     for (i = 0; i < o->nincludes; i++) {
         roots[nroots++] = o->includes[i];
     }
+    /* GALE_HOME: a directory that holds `std/` (so `unfold std.console` works anywhere) */
+    if (getenv("GALE_HOME") && getenv("GALE_HOME")[0]) {
+        roots[nroots++] = getenv("GALE_HOME");
+    }
 
     arena_init(&arena);
     file = parse_file(src, &arena, &perr);
@@ -204,6 +209,10 @@ static int run_compiler(const Options *o, Stage stage, int print_tree) {
         goto done;
     }
 
+    if (!prelude_add(file, &arena)) {
+        fprintf(stderr, "gale: internal error: cannot parse the built-in declarations\n");
+        goto done;
+    }
     sema = sema_new(&arena);
     if (!sema_check(sema, file, &serr)) {
         fprintf(stderr, "%s:%d:%d: error: %s\n", serr.file[0] ? serr.file : o->path, serr.line,
