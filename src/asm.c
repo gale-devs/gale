@@ -326,9 +326,10 @@ static void put_opd(char *buf, size_t cap, const Asm *a, const Opd *o, int size,
         if (o->disp == 0) {
             snprintf(w, room, "%s[%s]", pre, REG64[o->reg]);
         } else if (o->disp > 0) {
-            snprintf(w, room, "%s[%s+%ld]", pre, REG64[o->reg], o->disp);
+            snprintf(w, room, "%s[%s+%lld]", pre, REG64[o->reg], (long long)o->disp);
         } else {
-            snprintf(w, room, "%s[%s-%ld]", pre, REG64[o->reg], -o->disp);
+            /* long is 32 bits on Windows: negate as long long so -2147483648 works */
+            snprintf(w, room, "%s[%s-%lld]", pre, REG64[o->reg], -(long long)o->disp);
         }
         break;
     }
