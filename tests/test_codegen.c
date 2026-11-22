@@ -6,14 +6,17 @@
 #include <sys/wait.h>
 #define CAN_RUN 1
 #define PROG "build/cg_test_prog"
+#define OUT_FILE "build/cg_out.txt"
 #define RUN_CMD "./" PROG
 #elif defined(_WIN32)
 #define CAN_RUN 1
 #define PROG "build\\cg_test_prog.exe"
+#define OUT_FILE "build\\cg_out.txt"
 #define RUN_CMD PROG
 #else
 #define CAN_RUN 0
 #define PROG "build/cg_test_prog"
+#define OUT_FILE "build/cg_out.txt"
 #define RUN_CMD "./" PROG
 #endif
 
@@ -25,7 +28,9 @@
 #include "fsutil.h"
 #include "parser.h"
 #include "pe.h"
+#include "prelude.h"
 #include "sema.h"
+#include "unfold.h"
 
 /* Compiles programs all the way to an executable (ELF on Linux, PE on Windows) and,
  * on x86-64 Linux and Windows, runs them and checks the exit status (the low 8 bits
@@ -36,7 +41,7 @@ static int failures = 0;
 static int ran = 0;
 
 typedef struct {
-    char msg[400];
+    char msg[900];
     unsigned char *elf;
     size_t elf_len;
     char *asm_text;
@@ -46,15 +51,19 @@ typedef struct {
 static int build(const char *src, Target target, Build *b) {
     Arena a;
     ParseError pe;
+    UnfoldError ue;
     SemaError se;
     CodegenError ce;
     File *f;
+    Unfolder *u;
     Sema *s;
     Asm as;
     int entry;
     Code code;
     size_t *labels;
     char err[300];
+    int ok;
+    static const char *roots[1] = {"."}; /* std/ is looked for in the repository root */
 
     memset(b, 0, sizeof *b);
     arena_init(&a);
@@ -64,10 +73,19 @@ static int build(const char *src, Target target, Build *b) {
         arena_free(&a);
         return 0;
     }
+    u = unfold_new(&a, roots, 1);
+    if (!unfold_expand(u, f, "test.gale", &ue)) {
+        snprintf(b->msg, sizeof b->msg, "unfold %s:%d:%d: %s", ue.file, ue.line, ue.col, ue.msg);
+        unfold_free(u);
+        arena_free(&a);
+        return 0;
+    }
+    prelude_add(f, &a);
     s = sema_new(&a);
     if (!sema_check(s, f, &se)) {
-        snprintf(b->msg, sizeof b->msg, "sema %d:%d: %s", se.line, se.col, se.msg);
+        snprintf(b->msg, sizeof b->msg, "sema %s:%d:%d: %s", se.file, se.line, se.col, se.msg);
         sema_free(s);
+        unfold_free(u);
         arena_free(&a);
         return 0;
     }
@@ -75,6 +93,7 @@ static int build(const char *src, Target target, Build *b) {
     if (!codegen(s, &as, target, &entry, &ce)) {
         snprintf(b->msg, sizeof b->msg, "codegen %d:%d: %s", ce.line, ce.col, ce.msg);
         sema_free(s);
+        unfold_free(u);
         arena_free(&a);
         return 0;
     }
@@ -83,6 +102,7 @@ static int build(const char *src, Target target, Build *b) {
     if (!asm_encode(&as, &a, &code, labels, err, sizeof err)) {
         snprintf(b->msg, sizeof b->msg, "encode: %s", err);
         sema_free(s);
+        unfold_free(u);
         arena_free(&a);
         return 0;
     }
@@ -91,9 +111,11 @@ static int build(const char *src, Target target, Build *b) {
     } else {
         b->elf = elf_build(code.data, code.len, labels[entry], &b->elf_len);
     }
+    ok = b->elf != NULL;
     sema_free(s);
+    unfold_free(u);
     arena_free(&a);
-    return b->elf != NULL;
+    return ok;
 }
 
 static void release(Build *b) {
@@ -101,8 +123,8 @@ static void release(Build *b) {
     free(b->asm_text);
 }
 
-/* main's result, as the exit status */
-static void run_case(const char *name, const char *src, int want) {
+/* main's result, as the exit status; and, if want_out is not NULL, what it prints */
+static void run_impl(const char *name, const char *src, int want, const char *want_out) {
     Build b;
 
     if (!build(src, host_target(), &b)) {
@@ -119,7 +141,7 @@ static void run_case(const char *name, const char *src, int want) {
             failures++;
         } else {
             int code;
-            status = system(RUN_CMD);
+            status = system(want_out ? RUN_CMD " > " OUT_FILE : RUN_CMD);
             ran++;
 #if defined(_WIN32)
             code = status;
@@ -141,7 +163,31 @@ static void run_case(const char *name, const char *src, int want) {
 #else
     (void)want;
 #endif
+    if (CAN_RUN && want_out) {
+        size_t olen = 0;
+        char *out = read_file(OUT_FILE);
+        /* read_file stops being useful for binary data containing NULs, so compare lengths via strlen only for text */
+        if (!out) {
+            fprintf(stderr, "%s: no output was captured\n", name);
+            failures++;
+        } else {
+            olen = strlen(out);
+            if (olen != strlen(want_out) || memcmp(out, want_out, olen) != 0) {
+                fprintf(stderr, "%s: wrong output\n  got:  \"%s\"\n  want: \"%s\"\n", name, out, want_out);
+                failures++;
+            }
+            free(out);
+        }
+    }
     release(&b);
+}
+
+static void run_case(const char *name, const char *src, int want) {
+    run_impl(name, src, want, NULL);
+}
+
+static void run_output(const char *name, const char *src, int want, const char *want_out) {
+    run_impl(name, src, want, want_out);
 }
 
 static void compile_error(const char *name, const char *src, const char *needle) {
@@ -360,6 +406,54 @@ static void test_defer_and_short_circuit(void) {
 }
 
 /* The examples in examples/checked/ compile and give these exit statuses. */
+#define CONSOLE "unfold std.console\n"
+
+static void test_strings_and_output(void) {
+    run_output("hello world",
+               CONSOLE "export func main() -> void = {\n    std.console.println(\"Hello, World!\")\n}\n", 0,
+               "Hello, World!\n");
+    run_output("print and println",
+               CONSOLE "func main() = {\n  std.console.print(\"a\")\n  std.console.print(\"b\")\n  std.console.println(\"c\")\n  std.console.println(\"d\")\n}\n",
+               0, "abc\nd\n");
+    run_output("escapes",
+               CONSOLE "func main() = std.console.println(\"a\\tb\\\\c\\\"d\\'e\")\n", 0,
+               "a\tb\\c\"d'e\n");
+    run_output("empty string", CONSOLE "func main() = std.console.println(\"\")\n", 0, "\n");
+    run_output("utf-8",
+               CONSOLE "func main() = std.console.println(\"\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf\")\n", 0,
+               "\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf\n");
+    run_output("exit status and output",
+               CONSOLE "func main() -> i32 = {\n  std.console.println(\"x\")\n  7\n}\n", 7, "x\n");
+    run_output("loop",
+               CONSOLE "func main() = {\n  var i = 0\n  while i < 3 {\n    std.console.println(\"ab\")\n    i = i + 1\n  }\n}\n",
+               0, "ab\nab\nab\n");
+    run_output("string passed to a function",
+               CONSOLE "func hello(name: []u8) = {\n  std.console.print(\"Hello, \")\n  std.console.println(name)\n}\n"
+               "func main() = {\n  hello(\"Gale\")\n  hello(\"world\")\n}\n", 0, "Hello, Gale\nHello, world\n");
+    run_output("string in a struct",
+               CONSOLE "struct M = { msg: []u8, n: i32 }\n"
+               "func show(m: M) = std.console.println(m.msg)\n"
+               "func main() = {\n  let m = M { msg: \"inside\", n: 1 }\n  show(m)\n}\n", 0, "inside\n");
+    run_output("builtin.write directly", "func main() = builtin.write(\"raw\")\n", 0, "raw");
+    run_output("string result of a function",
+               CONSOLE "func pick(b: bool) -> []u8 = if b { \"yes\" } else { \"no\" }\n"
+               "func main() = {\n  std.console.println(pick(true))\n  std.console.println(pick(false))\n}\n", 0, "yes\nno\n");
+    {
+        /* a string longer than a short displacement and a one-byte length */
+        char src[900], want[400];
+        int i;
+        memset(want, 'x', 300);
+        want[300] = '\n';
+        want[301] = '\0';
+        strcpy(src, CONSOLE "func main() = std.console.println(\"");
+        for (i = 0; i < 300; i++) {
+            strcat(src, "x");
+        }
+        strcat(src, "\")\n");
+        run_output("long string", src, 0, want);
+    }
+}
+
 static void test_examples(void) {
     static const struct {
         const char *path;
@@ -368,6 +462,7 @@ static void test_examples(void) {
         {"examples/checked/fib.gale", 55},
         {"examples/checked/sum.gale", 5050 & 255},
         {"examples/checked/geometry.gale", 12},
+        {"examples/hello.gale", 0},
     };
     size_t i;
 
@@ -478,6 +573,7 @@ int main(void) {
     test_pointer_indexing();
     test_methods();
     test_defer_and_short_circuit();
+    test_strings_and_output();
     test_examples();
     test_reachability();
     test_output();
