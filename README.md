@@ -49,6 +49,7 @@ gale check -I lib app.gale       # unfold を展開して型検査
 gale asm app.gale                # 生成した独自アセンブリを表示
 gale build app.gale -o app       # 実行ファイルを作る(Linux は ELF、Windows は PE)
 gale build --target windows app.gale -o app.exe
+gale build -I . examples/hello.gale -o hello && ./hello    # std を使う例(-I は std/ を含むディレクトリ)
 gale --version
 ```
 
@@ -62,7 +63,8 @@ gale --version
 | 型検査 | 実装済み(`gale check`、仕様は [spec §17](docs/spec.md)) |
 | 独自アセンブリ | 実装済み(x86-64、`gale asm`) |
 | 機械語・ELF / PE 出力 | 実装済み(`gale build`、仕様は [spec §18](docs/spec.md)) |
-| 標準ライブラリ・小数・文字列 | 未着手 |
+| 文字列・`std.console` | 実装済み(`println` など。[spec §18](docs/spec.md)) |
+| 小数・配列・`?T` / `T!`・数値の文字列化 | 未着手 |
 | セルフホスティング | 未着手 |
 
 ## 開発用ツール
