@@ -20,7 +20,8 @@ typedef enum {
     OPD_IMM,
     OPD_MEM,   /* [reg + disp] */
     OPD_LABEL,
-    OPD_IMPORT /* an imported function (X_CALL only): call qword ptr [rip + its import slot] */
+    OPD_IMPORT, /* an imported function (X_CALL only): call qword ptr [rip + its import slot] */
+    OPD_DATA    /* a constant in the data area (X_LEA only): lea r, [rip + the data] */
 } OpdKind;
 
 typedef struct {
@@ -28,7 +29,7 @@ typedef struct {
     Reg reg;         /* REG: the register; MEM: the base register */
     long long imm;   /* IMM */
     long disp;       /* MEM */
-    int label;       /* LABEL: the label; IMPORT: the import index */
+    int label;       /* LABEL: the label; IMPORT: the import index; DATA: the data index */
 } Opd;
 
 typedef enum {
@@ -79,7 +80,13 @@ typedef struct {
     Vec insts;         /* Inst */
     Vec label_names;   /* const char*: NULL for anonymous labels */
     Vec imports;       /* Import */
+    Vec data;          /* Blob: constants placed after the code */
 } Asm;
+
+typedef struct {
+    const unsigned char *bytes;
+    size_t len;
+} Blob;
 
 void asm_init(Asm *a, Arena *arena);
 
@@ -101,6 +108,12 @@ const Import *asm_import_at(const Asm *a, size_t i);
  * total number of slots. */
 size_t asm_import_slots(const Asm *a, size_t *slots);
 
+/* Adds a constant (e.g. the bytes of a string) to the data area that follows the code.
+ * Identical constants are stored once. Returns its index, for opd_data(). */
+int asm_data(Asm *a, const unsigned char *bytes, size_t len);
+size_t asm_data_count(const Asm *a);
+const Blob *asm_data_at(const Asm *a, size_t i);
+
 void asm_emit(Asm *a, Inst in);
 size_t asm_count(const Asm *a);
 /* Changes the immediate (second operand) of an instruction already emitted, e.g. the
@@ -116,6 +129,7 @@ Opd opd_imm(long long v);
 Opd opd_mem(Reg base, long disp);
 Opd opd_label(int label);
 Opd opd_import(int import);
+Opd opd_data(int data);
 
 /* Instruction constructors. */
 Inst inst0(XOp op);

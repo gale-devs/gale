@@ -9,6 +9,36 @@ void asm_init(Asm *a, Arena *arena) {
     vec_init(&a->insts, sizeof(Inst));
     vec_init(&a->label_names, sizeof(const char *));
     vec_init(&a->imports, sizeof(Import));
+    vec_init(&a->data, sizeof(Blob));
+}
+
+int asm_data(Asm *a, const unsigned char *bytes, size_t len) {
+    size_t i;
+    Blob b;
+    unsigned char *copy;
+    const Blob *all = a->data.data;
+
+    for (i = 0; i < a->data.len; i++) {
+        if (all[i].len == len && (len == 0 || memcmp(all[i].bytes, bytes, len) == 0)) {
+            return (int)i;
+        }
+    }
+    copy = arena_alloc(a->arena, len + 1);
+    if (len) {
+        memcpy(copy, bytes, len);
+    }
+    b.bytes = copy;
+    b.len = len;
+    vec_push(a->arena, &a->data, &b);
+    return (int)a->data.len - 1;
+}
+
+size_t asm_data_count(const Asm *a) {
+    return a->data.len;
+}
+
+const Blob *asm_data_at(const Asm *a, size_t i) {
+    return &((const Blob *)a->data.data)[i];
 }
 
 int asm_import(Asm *a, const char *dll, const char *name) {
@@ -125,6 +155,14 @@ Opd opd_import(int import) {
     memset(&o, 0, sizeof o);
     o.kind = OPD_IMPORT;
     o.label = import;
+    return o;
+}
+
+Opd opd_data(int data) {
+    Opd o;
+    memset(&o, 0, sizeof o);
+    o.kind = OPD_DATA;
+    o.label = data;
     return o;
 }
 
@@ -305,6 +343,9 @@ static void put_opd(char *buf, size_t cap, const Asm *a, const Opd *o, int size,
     }
     case OPD_IMPORT:
         snprintf(w, room, "qword ptr [rip+%s]", asm_import_at(a, o->label)->name);
+        break;
+    case OPD_DATA:
+        snprintf(w, room, "[rip+.D%d]", o->label);
         break;
     case OPD_NONE:
         break;
