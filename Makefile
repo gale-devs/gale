@@ -49,6 +49,8 @@ test: $(GALE) $(TESTS)
 		echo "check $$f"; \
 		$(GALE) check $$f > /dev/null || exit 1; \
 	done
+	@echo "check examples/hello.gale (with the standard library)"
+	@$(GALE) check -I . examples/hello.gale > /dev/null
 
 clean:
 	rm -rf $(BUILD)

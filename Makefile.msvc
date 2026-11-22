@@ -8,8 +8,8 @@ CC = cl
 CFLAGS = /nologo /std:c11 /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /Isrc
 BUILD = build
 
-LIB_SRCS = src\lexer.c src\arena.c src\parser.c src\ast_dump.c src\fsutil.c src\unfold.c src\ty.c src\sema.c src\asm.c src\encode.c src\elf.c src\pe.c src\codegen.c
-HDRS = src\lexer.h src\arena.h src\ast.h src\parser.h src\fsutil.h src\unfold.h src\common.h src\ty.h src\sema.h src\asm.h src\encode.h src\elf.h src\pe.h src\codegen.h
+LIB_SRCS = src\lexer.c src\arena.c src\parser.c src\ast_dump.c src\fsutil.c src\unfold.c src\ty.c src\sema.c src\asm.c src\encode.c src\elf.c src\pe.c src\prelude.c src\codegen.c
+HDRS = src\lexer.h src\arena.h src\ast.h src\parser.h src\fsutil.h src\unfold.h src\common.h src\ty.h src\sema.h src\asm.h src\encode.h src\elf.h src\pe.h src\prelude.h src\codegen.h
 
 all: $(BUILD)\gale.exe
 
@@ -70,6 +70,8 @@ test: $(BUILD)\gale.exe $(BUILD)\test_lexer.exe $(BUILD)\test_arena.exe $(BUILD)
 	$(BUILD)\test_codegen.exe
 	@for %%f in (examples\*.gale examples\checked\*.gale) do (echo lex+parse %%f && $(BUILD)\gale.exe lex %%f > nul && $(BUILD)\gale.exe parse %%f > nul || exit 1)
 	@for %%f in (examples\checked\*.gale) do (echo check %%f && $(BUILD)\gale.exe check %%f > nul || exit 1)
+	@echo check examples\hello.gale (with the standard library)
+	@$(BUILD)\gale.exe check -I . examples\hello.gale > nul
 
 clean:
 	@if exist $(BUILD) rmdir /s /q $(BUILD)
