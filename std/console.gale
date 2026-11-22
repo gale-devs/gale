@@ -1,0 +1,8 @@
+// Console output. Strings are []u8; there is no formatting yet.
+
+export func print(s: []u8) = builtin.write(s)
+
+export func println(s: []u8) = {
+    builtin.write(s)
+    builtin.write("\n")
+}
