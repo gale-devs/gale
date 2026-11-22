@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "common.h"
+#include "prelude.h"
 
 #define REG(r) opd_reg(r)
 #define IMM(v) opd_imm(v)
@@ -22,6 +23,7 @@ typedef struct {
     TyCtx *tys;
     Arena *arena;
     Asm *as;
+    Target target;
     CodegenError *err;
     jmp_buf jb;
     const char *cur_file;
@@ -698,6 +700,46 @@ static void gen_assign(Gen *g, Expr *e) {
     copy_bytes(g, size_of(g, l->ty, e->line, e->col));
 }
 
+/* The bytes of a string literal (its text still has the quotes and the escapes). */
+static unsigned char *decode_string(Gen *g, const Expr *e, size_t *len) {
+    const char *p = e->u.lit.ptr + 1;
+    const char *end = e->u.lit.ptr + e->u.lit.len - 1;
+    unsigned char *out = arena_alloc(g->arena, e->u.lit.len + 1);
+    size_t n = 0;
+
+    while (p < end) {
+        if (*p == '\\' && p + 1 < end) {
+            p++;
+            switch (*p) {
+            case 'n': out[n++] = '\n'; break;
+            case 'r': out[n++] = '\r'; break;
+            case 't': out[n++] = '\t'; break;
+            case '0': out[n++] = 0; break;
+            default: out[n++] = (unsigned char)*p; break; /* \\ \" \' */
+            }
+            p++;
+        } else {
+            out[n++] = (unsigned char)*p++;
+        }
+    }
+    *len = n;
+    return out;
+}
+
+/* A string literal is a []u8: {pointer to the bytes in the data area, length}, built in
+ * a frame slot. rax = the address of that slice. */
+static void gen_string(Gen *g, Expr *e) {
+    size_t len;
+    unsigned char *bytes = decode_string(g, e, &len);
+    int d = asm_data(g->as, bytes, len);
+    long slot = alloc_slot(g, 16, 8);
+
+    asm_op2(g->as, X_LEA, 8, REG(RAX), opd_data(d));
+    asm_op2(g->as, X_MOV, 8, MEM(RBP, slot), REG(RAX));
+    asm_op2(g->as, X_MOV, 8, MEM(RBP, slot + 8), IMM((long long)len));
+    asm_op2(g->as, X_LEA, 8, REG(RAX), MEM(RBP, slot));
+}
+
 /* Builds the struct in a fresh frame slot, field by field. rax = its address. */
 static void gen_struct_lit(Gen *g, Expr *e) {
     StructInfo *si = e->ty->strukt;
@@ -777,6 +819,9 @@ static void gen_expr(Gen *g, Expr *e) {
         break;
     case EXPR_STRUCT_LIT:
         gen_struct_lit(g, e);
+        break;
+    case EXPR_STRING:
+        gen_string(g, e);
         break;
     default:
         fail(g, e->line, e->col, "this kind of expression is not supported by the code generator yet");
@@ -887,6 +932,55 @@ static void gen_stmt(Gen *g, Stmt *st) {
     }
 }
 
+/* ---- built-in functions ---- */
+
+/* Is fn the function `name` of the compiler's own `builtin` struct? */
+static int is_builtin(const Sym *fn, const char *name) {
+    const StructInfo *o = fn->owner;
+
+    if (!fn->item->file || strcmp(fn->item->file, PRELUDE_FILE) != 0 || !o || !o->parent) {
+        return 0;
+    }
+    if (o->name.len != 7 || memcmp(o->name.ptr, "builtin", 7) != 0) {
+        return 0;
+    }
+    return fn->name.len == strlen(name) && memcmp(fn->name.ptr, name, fn->name.len) == 0;
+}
+
+/* builtin.write(s: []u8): writes the bytes to standard output. The slice is the first
+ * argument: its pointer at [rbp+16], its length at [rbp+24]. */
+static void gen_builtin_write(Gen *g, Sym *fn) {
+    asm_label(g->as, fn->label);
+    asm_op1(g->as, X_PUSH, REG(RBP));
+    asm_op2(g->as, X_MOV, 8, REG(RBP), REG(RSP));
+    if (g->target == TARGET_LINUX) {
+        asm_op2(g->as, X_MOV, 8, REG(RSI), MEM(RBP, 16));
+        asm_op2(g->as, X_MOV, 8, REG(RDX), MEM(RBP, 24));
+        asm_op2(g->as, X_MOV, 8, REG(RDI), IMM(1)); /* stdout */
+        asm_op2(g->as, X_MOV, 8, REG(RAX), IMM(1)); /* write */
+        asm_op0(g->as, X_SYSCALL);
+    } else {
+        /* WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), ptr, len, &written, NULL). The stack
+         * is aligned to 16 bytes first, and 32 bytes of shadow space plus the fifth
+         * argument sit at the bottom. */
+        int get_std = asm_import(g->as, "kernel32.dll", "GetStdHandle");
+        int write_file = asm_import(g->as, "kernel32.dll", "WriteFile");
+
+        asm_op2(g->as, X_SUB, 8, REG(RSP), IMM(48));
+        asm_op2(g->as, X_AND, 8, REG(RSP), IMM(-16));
+        asm_op2(g->as, X_MOV, 8, REG(RCX), IMM(-11)); /* STD_OUTPUT_HANDLE */
+        asm_op1(g->as, X_CALL, opd_import(get_std));
+        asm_op2(g->as, X_MOV, 8, REG(RCX), REG(RAX));
+        asm_op2(g->as, X_MOV, 8, REG(RDX), MEM(RBP, 16));
+        asm_op2(g->as, X_MOV, 8, REG(R8), MEM(RBP, 24));
+        asm_op2(g->as, X_LEA, 8, REG(R9), MEM(RBP, -8)); /* &written */
+        asm_op2(g->as, X_MOV, 8, MEM(RSP, 32), IMM(0));  /* lpOverlapped */
+        asm_op1(g->as, X_CALL, opd_import(write_file));
+    }
+    asm_op0(g->as, X_LEAVE);
+    asm_op0(g->as, X_RET);
+}
+
 /* ---- functions ---- */
 
 static void gen_func(Gen *g, Sym *fn) {
@@ -896,6 +990,10 @@ static void gen_func(Gen *g, Sym *fn) {
     long off = 16;
 
     g->cur_file = it->file;
+    if (is_builtin(fn, "write")) {
+        gen_builtin_write(g, fn);
+        return;
+    }
     g->fn = fn;
     g->ret = ft->ret;
     g->frame = 0;
@@ -997,6 +1095,7 @@ int codegen(Sema *sema, Asm *out, Target target, int *entry_label, CodegenError 
     memset(&g, 0, sizeof g);
     g.sema = sema;
     g.tys = sema_types(sema);
+    g.target = target;
     g.as = out;
     g.arena = out->arena;
     g.err = err;
