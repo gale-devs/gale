@@ -41,7 +41,7 @@ static int failures = 0;
 static int ran = 0;
 
 typedef struct {
-    char msg[900];
+    char msg[1500];
     unsigned char *elf;
     size_t elf_len;
     char *asm_text;
