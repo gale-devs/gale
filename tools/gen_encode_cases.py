@@ -56,7 +56,8 @@ def c_opd(o):
     if o[0] == "reg":
         return "REG(%s)" % REGS64[o[2]].upper()
     if o[0] == "mem":
-        return "MEM(%s, %d)" % (REGS64[o[2]].upper(), o[3])
+        disp = "(-2147483647L - 1L)" if o[3] == -2147483648 else "%dL" % o[3]
+        return "MEM(%s, %s)" % (REGS64[o[2]].upper(), disp)
     return "IMM(%dLL)" % o[1]
 
 
